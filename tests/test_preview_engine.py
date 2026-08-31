@@ -343,3 +343,66 @@ def test_missing_input_files_raise_error(tmp_path: Path):
     )
     with pytest.raises(TimelineBuildError):
         builder.build_timeline()
+
+
+def test_audio_architecture_and_timeline_item_audio_metadata(mock_preview_environment: Path):
+    """Test Phase 10.2: Audio architecture metadata and TimelineItem audio track configuration."""
+    builder = PreviewTimelineBuilder(
+        movie_id="test_preview_movie",
+        analysis_dir=mock_preview_environment,
+    )
+    manifest = builder.build_timeline()
+
+    # Check manifest audio architecture
+    assert "narration_bus" in manifest.audio_architecture
+    assert "source_audio_bus" in manifest.audio_architecture
+    assert "music_bus" in manifest.audio_architecture
+    assert manifest.audio_architecture["narration_bus"]["ducking_depth_db"] == -14.0
+
+    # Check TimelineItem audio metadata
+    for seg in manifest.segments:
+        for it in seg.items:
+            assert it.future_narration_point is True
+            if it.item_type == "SOURCE_CLIP":
+                assert it.has_source_audio is True
+                assert it.audio_track_type == "SOURCE_AUDIO"
+                assert it.audio_bus_mapping["source_audio_bus_db"] == 0.0
+            else:
+                assert it.has_source_audio is False
+                assert it.audio_track_type == "SILENCE"
+
+
+def test_rough_preview_v3_streams_and_clean_visuals(mock_preview_environment: Path):
+    """Test Phase 10.2: rough_preview_v3.mp4 generation with both H.264 video and AAC audio."""
+    manifest, video_path = build_rough_video_preview(
+        source_path=mock_preview_environment.name,
+        movie_id="test_preview_movie",
+        output_base_dir=mock_preview_environment.parent,
+        render_video=True,
+    )
+
+    preview_dir = mock_preview_environment / "preview"
+    v3_video = preview_dir / "rough_preview_v3.mp4"
+    assert v3_video.exists()
+    assert v3_video.stat().st_size > 0
+
+    # Probe v3 streams
+    cmd_probe = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,width,height,channels,sample_rate",
+        "-of", "json",
+        str(v3_video),
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True, check=True)
+    probe_data = json.loads(res.stdout)
+
+    v_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "video")
+    a_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "audio")
+
+    assert v_stream["codec_name"] == "h264"
+    assert v_stream["width"] == 1920
+    assert v_stream["height"] == 1080
+    assert a_stream["codec_name"] == "aac"
+    assert a_stream["channels"] == 2
+    assert a_stream["sample_rate"] == "44100"
+

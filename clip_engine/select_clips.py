@@ -329,7 +329,7 @@ class SourceClipSelector:
                 extracted_files.append(out_file)
                 continue
 
-            # FFmpeg extraction command with fast seek
+            # FFmpeg extraction command with fast seek and original source audio
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -338,8 +338,11 @@ class SourceClipSelector:
                 "-t", str(clip.duration_seconds),
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
-                "-crf", "28",
-                "-an",  # No audio required for preview
+                "-crf", "24",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-ac", "2",
                 str(out_file),
             ]
             try:
@@ -347,7 +350,28 @@ class SourceClipSelector:
                 if out_file.exists() and out_file.stat().st_size > 0:
                     extracted_files.append(out_file)
             except Exception as exc:
-                logger.debug("Failed to extract preview clip %s: %s", clip.clip_id, exc)
+                # Fallback video-only with silent audio track if audio stream is missing
+                cmd_fallback = [
+                    "ffmpeg",
+                    "-y",
+                    "-ss", str(clip.source_start_seconds),
+                    "-i", str(source_path_to_use),
+                    "-f", "lavfi",
+                    "-i", "anullsrc=r=44100:cl=stereo",
+                    "-t", str(clip.duration_seconds),
+                    "-c:v", "libx264",
+                    "-preset", "ultrafast",
+                    "-crf", "24",
+                    "-c:a", "aac",
+                    "-shortest",
+                    str(out_file),
+                ]
+                try:
+                    subprocess.run(cmd_fallback, capture_output=True, check=True)
+                    if out_file.exists() and out_file.stat().st_size > 0:
+                        extracted_files.append(out_file)
+                except Exception as exc2:
+                    logger.debug("Failed to extract preview clip %s: %s (fallback failed: %s)", clip.clip_id, exc, exc2)
 
         logger.info("Extracted %d preview clips to %s", len(extracted_files), preview_dir)
         return extracted_files

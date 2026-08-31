@@ -24,6 +24,13 @@ class TimelineItem:
     caption_text: Optional[str] = None
     clip_path: Optional[str] = None
     label: str = ""
+    has_source_audio: bool = False
+    audio_track_type: str = "SILENCE"  # "SOURCE_AUDIO", "SILENCE", "AMBIENT_TAIL"
+    future_narration_point: bool = True
+    audio_bus_mapping: Dict[str, Any] = field(default_factory=lambda: {
+        "narration_bus_ducking_db": -14.0,
+        "source_audio_bus_db": 0.0,
+    })
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -38,6 +45,10 @@ class TimelineItem:
             "caption_text": self.caption_text,
             "clip_path": self.clip_path,
             "label": self.label,
+            "has_source_audio": self.has_source_audio,
+            "audio_track_type": self.audio_track_type,
+            "future_narration_point": self.future_narration_point,
+            "audio_bus_mapping": self.audio_bus_mapping,
         }
 
     @classmethod
@@ -54,6 +65,13 @@ class TimelineItem:
             caption_text=data.get("caption_text"),
             clip_path=data.get("clip_path"),
             label=str(data.get("label", "")),
+            has_source_audio=bool(data.get("has_source_audio", False)),
+            audio_track_type=str(data.get("audio_track_type", "SILENCE")),
+            future_narration_point=bool(data.get("future_narration_point", True)),
+            audio_bus_mapping=dict(data.get("audio_bus_mapping", {
+                "narration_bus_ducking_db": -14.0,
+                "source_audio_bus_db": 0.0,
+            })),
         )
 
 
@@ -106,6 +124,11 @@ class PreviewManifest:
     total_source_footage_seconds: float = 0.0
     total_placeholder_seconds: float = 0.0
     video_output_path: Optional[str] = None
+    audio_architecture: Dict[str, Any] = field(default_factory=lambda: {
+        "narration_bus": {"role": "primary_voice", "ducking_depth_db": -14.0},
+        "source_audio_bus": {"role": "dramatic_sound_and_ambience", "target_loudness_lufs": -24.0},
+        "music_bus": {"role": "optional_score", "ducking_depth_db": -18.0},
+    })
     segments: List[SegmentTimeline] = field(default_factory=list)
     created_at: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
@@ -127,6 +150,7 @@ class PreviewManifest:
             "total_source_footage_seconds": round(sum(c.duration_seconds for c in clips), 2),
             "total_placeholder_seconds": round(sum(p.duration_seconds for p in placeholders), 2),
             "video_output_path": self.video_output_path,
+            "audio_architecture": self.audio_architecture,
             "segments": [s.to_dict() if isinstance(s, SegmentTimeline) else s for s in self.segments],
             "created_at": self.created_at,
             "warnings": self.warnings,
@@ -149,6 +173,11 @@ class PreviewManifest:
             total_source_footage_seconds=float(data.get("total_source_footage_seconds", 0.0)),
             total_placeholder_seconds=float(data.get("total_placeholder_seconds", 0.0)),
             video_output_path=data.get("video_output_path"),
+            audio_architecture=dict(data.get("audio_architecture", {
+                "narration_bus": {"role": "primary_voice", "ducking_depth_db": -14.0},
+                "source_audio_bus": {"role": "dramatic_sound_and_ambience", "target_loudness_lufs": -24.0},
+                "music_bus": {"role": "optional_score", "ducking_depth_db": -18.0},
+            })),
             segments=[
                 SegmentTimeline.from_dict(s) if isinstance(s, dict) else s
                 for s in data.get("segments", [])

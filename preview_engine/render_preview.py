@@ -166,11 +166,10 @@ class RoughPreviewRenderer:
         return self.output_srt_file
 
     def _render_placeholder_chunk(self, item: TimelineItem, out_path: Path, ref_clip_path: Optional[Path] = None) -> Path:
-        """Generate a still freeze/hold placeholder with subtle dark tint and segment title card."""
+        """Generate a clean still freeze/hold placeholder with silent audio (no text overlays, no dialogue loops)."""
         dur = max(0.5, item.duration_seconds)
-        clean_label = item.label.replace(":", " - ").replace("'", "").replace("\\", "")
 
-        # If a reference source clip is available, create a still frame hold with darkened overlay
+        # If a reference source clip is available, create a clean still frame hold with source aspect ratio
         if ref_clip_path and ref_clip_path.exists() and ref_clip_path.stat().st_size > 0:
             still_img = self.chunks_dir / f"{item.item_id}_still.jpg"
             cmd_extract = [
@@ -184,43 +183,55 @@ class RoughPreviewRenderer:
             subprocess.run(cmd_extract, capture_output=True)
 
             if still_img.exists() and still_img.stat().st_size > 0:
+                # Clean freeze still hold with silent AAC audio track (no audio loops)
                 cmd_still = [
                     "ffmpeg", "-y",
                     "-loop", "1",
                     "-i", str(still_img),
+                    "-f", "lavfi",
+                    "-i", "anullsrc=r=44100:cl=stereo",
                     "-t", f"{dur:.2f}",
                     "-vf",
-                    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,eq=brightness=-0.3:saturation=0.7,setsar=1,"
-                    f"drawtext=text='[ {clean_label} ]':fontcolor=0xccddee:fontsize=34:x=(w-text_w)/2:y=(h-text_h)/2-30,"
-                    f"drawtext=text='Narration Segment ({item.start_time_seconds:.1f}s -> {item.end_time_seconds:.1f}s)':fontcolor=0x8899aa:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2+30",
+                    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
                     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30",
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                    "-shortest",
                     str(out_path),
                 ]
                 res_still = subprocess.run(cmd_still, capture_output=True)
                 if res_still.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
                     return out_path
 
-        # Standard clean dark placeholder card
+        # Clean dark cinematic placeholder with silent AAC audio
         cmd = [
             "ffmpeg",
             "-y",
             "-f", "lavfi",
-            "-i", f"color=c=0x14141e:s=1920x1080:d={dur:.2f}:r=30",
-            "-vf",
-            f"drawtext=text='[ {clean_label} ]':fontcolor=0x8899aa:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2-40,"
-            f"drawtext=text='Narration Segment ({item.start_time_seconds:.1f}s -> {item.end_time_seconds:.1f}s)':fontcolor=0x556677:fontsize=24:x=(w-text_w)/2:y=(h-text_h)/2+30",
+            "-i", f"color=c=0x0d0d12:s=1920x1080:d={dur:.2f}:r=30",
+            "-f", "lavfi",
+            "-i", "anullsrc=r=44100:cl=stereo",
+            "-t", f"{dur:.2f}",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
             "-r", "30",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
             str(out_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
             cmd_fallback = [
-                "ffmpeg", "-y", "-f", "lavfi",
-                "-i", f"color=c=black:s=1920x1080:d={dur:.2f}:r=30",
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={dur:.2f}:r=30",
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                "-t", f"{dur:.2f}",
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                "-shortest",
                 str(out_path),
             ]
             subprocess.run(cmd_fallback, capture_output=True, check=True)
@@ -228,13 +239,14 @@ class RoughPreviewRenderer:
         return out_path
 
     def _render_source_clip_chunk(self, item: TimelineItem, out_path: Path) -> Path:
-        """Normalize source clip to 1920x1080 @ 30fps preserving original aspect ratio."""
+        """Normalize source clip to 1920x1080 @ 30fps preserving original audio and aspect ratio."""
         clip_file = Path(item.clip_path) if item.clip_path else None
         if not clip_file or not clip_file.exists() or clip_file.stat().st_size == 0:
             # Fallback to placeholder if clip file is missing
             return self._render_placeholder_chunk(item, out_path)
 
         dur = max(0.5, item.duration_seconds)
+        # Attempt direct normalization with original audio stream
         cmd = [
             "ffmpeg",
             "-y",
@@ -246,19 +258,45 @@ class RoughPreviewRenderer:
             "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
             "-r", "30",
-            "-an",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-ar", "44100",
+            "-ac", "2",
             str(out_path),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
-            return self._render_placeholder_chunk(item, out_path)
+            # If source clip had no audio stream, add silent audio track for consistent stream layout
+            cmd_silent_audio = [
+                "ffmpeg",
+                "-y",
+                "-i", str(clip_file),
+                "-f", "lavfi",
+                "-i", "anullsrc=r=44100:cl=stereo",
+                "-t", str(dur),
+                "-vf",
+                "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p",
+                "-r", "30",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-shortest",
+                str(out_path),
+            ]
+            subprocess.run(cmd_silent_audio, capture_output=True)
+            if not out_path.exists() or out_path.stat().st_size == 0:
+                return self._render_placeholder_chunk(item, out_path, ref_clip_path=clip_file)
 
         return out_path
 
     def render(self, manifest: Optional[PreviewManifest] = None) -> Path:
         """
-        Execute full render pipeline: chunk generation, video concat, subtitle burning,
-        and silent audio track muxing.
+        Execute full clean render pipeline: chunk normalization, original audio preservation,
+        and clean concatenation into rough_preview_v3.mp4.
         """
         if manifest is None:
             builder = PreviewTimelineBuilder(
@@ -271,8 +309,8 @@ class RoughPreviewRenderer:
         self.preview_dir.mkdir(parents=True, exist_ok=True)
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. Generate SRT subtitles
-        srt_path = self.generate_srt_captions(manifest)
+        # 1. Generate standalone SRT sidecar captions for inspection
+        self.generate_srt_captions(manifest)
 
         # 2. Render all individual normalized chunks
         chunk_files: List[Path] = []
@@ -283,7 +321,7 @@ class RoughPreviewRenderer:
             if it.item_type == "SOURCE_CLIP":
                 self._render_source_clip_chunk(it, chunk_file)
             else:
-                # Find nearest source clip in timeline to use as freeze still background
+                # Find nearest source clip in timeline to use as clean freeze still background
                 ref_clip: Optional[Path] = None
                 if idx > 0 and all_items[idx - 1].clip_path:
                     ref_clip = Path(str(all_items[idx - 1].clip_path))
@@ -299,76 +337,39 @@ class RoughPreviewRenderer:
                 # Use forward slashes for FFmpeg concat safe path
                 f.write(f"file '{ch.resolve().as_posix()}'\n")
 
-        # 4. Concatenate chunks into uncaptioned master
-        temp_concat_video = self.preview_dir / "temp_concat.mp4"
+        # 4. Concatenate chunks into final clean rough_preview_v3.mp4 (video + audio)
+        output_v3 = self.preview_dir / "rough_preview_v3.mp4"
         cmd_concat = [
             "ffmpeg",
             "-y",
             "-f", "concat",
             "-safe", "0",
             "-i", str(concat_list_file),
-            "-c", "copy",
-            str(temp_concat_video),
-        ]
-        res_concat = subprocess.run(cmd_concat, capture_output=True, text=True)
-        if res_concat.returncode != 0 or not temp_concat_video.exists():
-            raise VideoRenderError(f"FFmpeg concatenation failed: {res_concat.stderr}")
-
-        # 5. Burn subtitles & add silent audio track into final rough_preview.mp4
-        # Format SRT path for FFmpeg subtitles filter on Windows
-        srt_escaped = srt_path.resolve().as_posix().replace(":", "\\:")
-        total_dur = manifest.total_duration_seconds
-
-        cmd_final = [
-            "ffmpeg",
-            "-y",
-            "-i", str(temp_concat_video),
-            "-f", "lavfi",
-            "-i", f"anullsrc=r=44100:cl=stereo",
-            "-vf", f"subtitles='{srt_escaped}':force_style='FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,MarginV=35'",
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-crf", "26",
+            "-crf", "24",
             "-c:a", "aac",
             "-b:a", "128k",
-            "-t", str(total_dur),
-            "-shortest",
-            "-pix_fmt", "yuv420p",
-            str(self.output_video_file),
+            str(output_v3),
         ]
-        res_final = subprocess.run(cmd_final, capture_output=True, text=True)
+        res_concat = subprocess.run(cmd_concat, capture_output=True, text=True)
+        if res_concat.returncode != 0 or not output_v3.exists():
+            raise VideoRenderError(f"FFmpeg concatenation failed: {res_concat.stderr}")
 
-        if res_final.returncode != 0 or not self.output_video_file.exists() or self.output_video_file.stat().st_size == 0:
-            # Fallback if subtitle filter fails: output video with silent audio track and standalone srt
-            cmd_no_sub = [
-                "ffmpeg",
-                "-y",
-                "-i", str(temp_concat_video),
-                "-f", "lavfi",
-                "-i", f"anullsrc=r=44100:cl=stereo",
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-t", str(total_dur),
-                "-shortest",
-                str(self.output_video_file),
-            ]
-            subprocess.run(cmd_no_sub, capture_output=True, check=True)
-
-        # Also create copy rough_preview_v2.mp4
+        # Also create copies: rough_preview.mp4 and rough_preview_v2.mp4
         try:
-            shutil.copy2(self.output_video_file, self.output_video_v2_file)
+            shutil.copy2(output_v3, self.output_video_file)
+            shutil.copy2(output_v3, self.output_video_v2_file)
         except Exception:
             pass
 
-        # Cleanup temp concat
-        if temp_concat_video.exists():
-            try:
-                temp_concat_video.unlink()
-            except Exception:
-                pass
+        # Save V3 manifest
+        manifest_v3_path = self.preview_dir / "preview_manifest_v3.json"
+        with open(manifest_v3_path, "w", encoding="utf-8") as f:
+            f.write(manifest.to_json(indent=2))
 
-        logger.info("Successfully rendered rough preview video to %s and %s", self.output_video_file, self.output_video_v2_file)
-        return self.output_video_file
+        logger.info("Successfully rendered clean rough preview video with original audio to %s", output_v3)
+        return output_v3
 
 
 # ==============================================================================

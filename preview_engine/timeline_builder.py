@@ -109,6 +109,10 @@ class PreviewTimelineBuilder:
                     duration_seconds=round(seg_duration, 2),
                     caption_text=script_seg.text,
                     label=f"Narration Context: {script_seg.segment_id}",
+                    has_source_audio=False,
+                    audio_track_type="SILENCE",
+                    future_narration_point=True,
+                    audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
                 )
                 seg_items.append(item)
                 item_counter += 1
@@ -123,7 +127,7 @@ class PreviewTimelineBuilder:
                 t_cursor = seg_start
 
                 for c_idx, clip in enumerate(clips):
-                    # 1. Leading/Intermediary Placeholder
+                    # 1. Leading/Intermediary Placeholder (Still/Freeze hold)
                     if gap_duration >= 0.5:
                         p_start = t_cursor
                         p_end = round(t_cursor + gap_duration, 2)
@@ -137,12 +141,16 @@ class PreviewTimelineBuilder:
                                 duration_seconds=p_dur,
                                 caption_text=script_seg.text,
                                 label=f"Scene Hold: {clip.source_scene_id}",
+                                has_source_audio=False,
+                                audio_track_type="SILENCE",
+                                future_narration_point=True,
+                                audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
                             )
                         )
                         item_counter += 1
                         t_cursor = p_end
 
-                    # 2. Source Clip
+                    # 2. Source Clip (Moving video + original source audio)
                     c_start = t_cursor
                     c_end = round(t_cursor + clip.duration_seconds, 2)
                     c_dur = round(c_end - c_start, 2)
@@ -160,6 +168,10 @@ class PreviewTimelineBuilder:
                             caption_text=script_seg.text,
                             clip_path=str(clip_file) if clip_file else None,
                             label=clip.visual_reason,
+                            has_source_audio=True,
+                            audio_track_type="SOURCE_AUDIO",
+                            future_narration_point=True,
+                            audio_bus_mapping={"narration_bus_ducking_db": -14.0, "source_audio_bus_db": 0.0},
                         )
                     )
                     item_counter += 1
@@ -179,6 +191,10 @@ class PreviewTimelineBuilder:
                             duration_seconds=p_dur,
                             caption_text=script_seg.text,
                             label="Narrative Transition",
+                            has_source_audio=False,
+                            audio_track_type="SILENCE",
+                            future_narration_point=True,
+                            audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
                         )
                     )
                     item_counter += 1
