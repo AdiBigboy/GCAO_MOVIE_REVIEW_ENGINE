@@ -1,0 +1,51 @@
+# Machine-specific secrets
+.env
+.env.*
+!.env.example
+
+# Python runtime & environments
+__pycache__/
+*.pyc
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.venv/
+venv/
+
+# Local cache & processing artifacts
+cache/*
+!cache/.gitkeep
+analysis/*
+!analysis/.gitkeep
+output/*
+!output/.gitkeep
+logs/*
+!logs/.gitkeep
+database/*
+!database/.gitkeep
+input/*
+!input/.gitkeep
+
+# Raw media formats
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
+# Audio formats
+*.wav
+*.mp3
+*.flac
+*.aac
+
+# Extracted frame & image artifacts
+*.jpg
+*.jpeg
+*.png
+
+# External movie source directories
+MOVIES_SOURCE/
+movies/
+
