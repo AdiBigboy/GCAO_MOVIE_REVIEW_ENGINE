@@ -65,6 +65,10 @@ from narration_engine.generate_script import (
     ScriptDocument,
     generate_movie_script,
 )
+from clip_engine.select_clips import (
+    ClipPlanDocument,
+    generate_movie_clip_plan,
+)
 
 logger = logging.getLogger("pipeline_runner")
 
@@ -175,7 +179,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 1: Ingest Movie
     # --------------------------------------------------------------------------
-    print("[1/7] Ingesting movie metadata...")
+    print("[1/8] Ingesting movie metadata...")
     t0 = time.time()
     try:
         metadata: MovieMetadata = ingest_movie(
@@ -225,7 +229,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 2: Sample Movie Frames
     # --------------------------------------------------------------------------
-    print("[2/7] Sampling timeline frames...")
+    print("[2/8] Sampling timeline frames...")
     t0 = time.time()
     try:
         timeline: TimelineIndex = sample_movie_frames(
@@ -273,7 +277,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 3: Extract Movie Dialogue
     # --------------------------------------------------------------------------
-    print("[3/7] Extracting dialogue and subtitles...")
+    print("[3/8] Extracting dialogue and subtitles...")
     t0 = time.time()
     try:
         dialogue: DialogueDocument = extract_movie_dialogue(
@@ -324,7 +328,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 4: Multimodal Timeline Event Analysis
     # --------------------------------------------------------------------------
-    print("[4/7] Analyzing timeline events...")
+    print("[4/8] Analyzing timeline events...")
     t0 = time.time()
     try:
         events: EventsDocument = analyze_timeline_events(
@@ -377,7 +381,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 5: Track Character Identities & Memory
     # --------------------------------------------------------------------------
-    print("[5/7] Tracking character identities & memory...")
+    print("[5/8] Tracking character identities & memory...")
     t0 = time.time()
     try:
         characters: CharactersDocument = track_movie_characters(
@@ -431,7 +435,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 7: Story Reconstruction Engine
     # --------------------------------------------------------------------------
-    print("[6/7] Reconstructing movie story...")
+    print("[6/8] Reconstructing movie story...")
     t0 = time.time()
     try:
         story: StoryDocument = reconstruct_movie_story(
@@ -481,7 +485,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 8: Narration & Script Generation Engine
     # --------------------------------------------------------------------------
-    print("[7/7] Planning narrative and generating Malay review script...")
+    print("[7/8] Planning narrative and generating Malay review script...")
     t0 = time.time()
     try:
         plan_doc: NarrativePlanDocument = generate_movie_narrative_plan(
@@ -519,6 +523,53 @@ def run_movie_pipeline(
         phase_results["phase_8_generate_script"] = {
             "status": "FAILED",
             "duration_seconds": round(t_script, 3),
+            "error": str(exc),
+        }
+        _write_failed_summary(
+            summary_file_path=summary_file_path,
+            movie_id=assigned_movie_id,
+            source_filename=resolved_source.name,
+            source_path=str(resolved_source),
+            started_at=started_at,
+            duration=time.time() - pipeline_start,
+            phase_results=phase_results,
+            error=err_msg,
+        )
+        raise
+
+    # --------------------------------------------------------------------------
+    # Phase 9: Source Clip Selection Engine
+    # --------------------------------------------------------------------------
+    print("[8/8] Selecting supporting source clips (<= 3.0s)...")
+    t0 = time.time()
+    try:
+        clip_plan: ClipPlanDocument = generate_movie_clip_plan(
+            source_path=resolved_source,
+            movie_id=assigned_movie_id,
+            output_base_dir=out_base,
+            max_clip_duration_seconds=3.0,
+            force=force,
+        )
+        t_clip = time.time() - t0
+        phase_results["phase_9_select_clips"] = {
+            "status": "SUCCESS" if not dry_run else "DRY_RUN",
+            "duration_seconds": round(t_clip, 3),
+            "artifact_file": "clip_plan.json" if not dry_run else None,
+            "total_clips": clip_plan.total_clips,
+            "total_source_duration_seconds": clip_plan.total_source_duration_seconds,
+            "max_clip_duration_seconds": clip_plan.max_clip_duration_seconds,
+        }
+        print(
+            f"      -> Success ({t_clip:.2f}s): {clip_plan.total_clips} source clips selected "
+            f"(total source footage: {clip_plan.total_source_duration_seconds:.1f}s, max clip: {clip_plan.max_clip_duration_seconds:.1f}s)"
+        )
+    except Exception as exc:
+        t_clip = time.time() - t0
+        err_msg = f"Phase 9 (Select Clips) failed: {exc}"
+        logger.error(err_msg, exc_info=True)
+        phase_results["phase_9_select_clips"] = {
+            "status": "FAILED",
+            "duration_seconds": round(t_clip, 3),
             "error": str(exc),
         }
         _write_failed_summary(
