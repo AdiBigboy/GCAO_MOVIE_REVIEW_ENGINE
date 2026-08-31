@@ -509,6 +509,7 @@ def track_movie_characters(
             movie_id=assigned_movie_id,
             output_base_dir=output_base_dir,
             force=force,
+            dry_run=dry_run,
             ai_provider=ai_provider,
         )
     else:
