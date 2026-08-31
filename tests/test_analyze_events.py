@@ -283,6 +283,33 @@ def test_idempotent_resume_and_checkpoint(synthetic_phase4_movie: Path, tmp_path
     assert mock_p.call_count == 8
 
 
+def test_resume_with_limit_scopes_to_limit(synthetic_phase4_movie: Path, tmp_path: Path):
+    """Test that resuming with limit=N scopes total completed events to N rather than K + N."""
+    out_dir = tmp_path / "analysis_resume_limit"
+    mock_p = MockAIProvider()
+
+    # 1. Run limit=2 (processes frames 1 & 2)
+    doc1 = analyze_timeline_events(
+        source_path=synthetic_phase4_movie,
+        output_base_dir=out_dir,
+        limit=2,
+        ai_provider=mock_p,
+    )
+    assert doc1.total_events == 2
+    assert mock_p.call_count == 2
+
+    # 2. Resume with limit=3 (should process ONLY frame 3, bringing total to 3)
+    doc2 = analyze_timeline_events(
+        source_path=synthetic_phase4_movie,
+        output_base_dir=out_dir,
+        limit=3,
+        force=False,
+        ai_provider=mock_p,
+    )
+    assert doc2.total_events == 3
+    assert mock_p.call_count == 3  # exactly 1 additional call
+
+
 def test_cli_analyze_events_mock(synthetic_phase4_movie: Path, tmp_path: Path):
     """Test CLI execution python -m movie_analyzer.analyze_events."""
     out_dir = tmp_path / "cli_analysis_events"

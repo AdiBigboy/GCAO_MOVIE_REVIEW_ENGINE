@@ -232,15 +232,17 @@ def analyze_timeline_events(
             logger.warning("Could not load existing events.json; starting fresh. Reason: %s", exc)
             existing_events_by_index = {}
 
-    # Determine candidate frames to process
+    # Apply global limit to candidate timeline frames if specified
+    candidate_frames = all_frames
+    if limit is not None and limit > 0:
+        candidate_frames = all_frames[:limit]
+
+    # Determine missing frames to process within the candidate scope
     frames_to_process: List[Dict[str, Any]] = []
-    for f in all_frames:
+    for f in candidate_frames:
         idx = int(f.get("index", 0))
         if force or idx not in existing_events_by_index:
             frames_to_process.append(f)
-
-    if limit is not None and limit > 0:
-        frames_to_process = frames_to_process[:limit]
 
     # 5. Handle Dry Run Mode
     if dry_run:

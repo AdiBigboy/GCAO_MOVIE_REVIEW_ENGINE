@@ -25,7 +25,7 @@ from ai.base import (
 
 logger = logging.getLogger("ai.providers.gemini")
 
-DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def _load_dotenv_if_present() -> None:
@@ -177,17 +177,42 @@ Respond ONLY with a JSON object adhering to this schema:
             "generationConfig": {
                 "response_mime_type": "application/json",
                 "temperature": 0.2,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 4096,
             },
         }
 
         url = f"{self.endpoint_url}?key={api_key}"
 
-        try:
-            response = requests.post(url, json=payload, timeout=self.timeout)
-        except Exception as exc:
-            logger.error("Gemini API request failed: %s", exc)
-            raise ModelInvocationError(f"Network error calling Gemini API: {exc}") from exc
+        max_retries = 3
+        last_response = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(url, json=payload, timeout=self.timeout)
+                last_response = response
+                if response.status_code == 200:
+                    break
+                if response.status_code in (429, 500, 502, 503, 504):
+                    logger.warning(
+                        "Gemini API returned transient HTTP %d (attempt %d/%d). Retrying in %ds...",
+                        response.status_code, attempt, max_retries, attempt * 2
+                    )
+                    import time
+                    time.sleep(attempt * 2)
+                    continue
+                # Non-transient error
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as net_err:
+                logger.warning(
+                    "Gemini API network timeout/error (attempt %d/%d): %s. Retrying...",
+                    attempt, max_retries, net_err
+                )
+                import time
+                time.sleep(attempt * 2)
+                continue
+
+        response = last_response
+        if response is None:
+            raise ModelInvocationError("Gemini API failed to return a response after retries.")
 
         if response.status_code != 200:
             logger.error("Gemini API returned HTTP %d: %s", response.status_code, response.text)
