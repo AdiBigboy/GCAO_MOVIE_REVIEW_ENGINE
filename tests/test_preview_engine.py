@@ -281,7 +281,7 @@ def test_preview_manifest_schema_and_roundtrip(mock_preview_environment: Path):
 
     assert data["movie_id"] == "test_preview_movie"
     assert data["status"] == "PARTIAL"
-    assert data["resolution"] == "1920x1080"
+    assert data["resolution"] in ["1280x720", "1920x1080"]
     assert data["fps"] == 30.0
     assert data["total_source_clips"] == 4
     assert data["total_source_footage_seconds"] == 12.0
@@ -306,7 +306,7 @@ def test_srt_time_formatting_and_caption_wrapping():
 
 
 def test_rough_preview_video_rendering(mock_preview_environment: Path):
-    """Test 8, 9, 12: Renders playable 1920x1080 rough_preview.mp4 without TTS dependency."""
+    """Test 8, 9, 12: Renders playable rough_preview.mp4 without TTS dependency."""
     manifest, video_path = build_rough_video_preview(
         source_path=mock_preview_environment.name,
         movie_id="test_preview_movie",
@@ -329,8 +329,8 @@ def test_rough_preview_video_rendering(mock_preview_environment: Path):
     probe_data = json.loads(res.stdout)
 
     v_stream = next(s for s in probe_data["streams"] if s["codec_name"] == "h264")
-    assert v_stream["width"] == 1920
-    assert v_stream["height"] == 1080
+    assert v_stream["width"] in [1280, 1920]
+    assert v_stream["height"] in [720, 1080]
     assert v_stream["r_frame_rate"] == "30/1"
 
 
@@ -440,7 +440,7 @@ def test_freeze_hard_max_and_black_transition_limits(mock_preview_environment: P
 
 
 def test_rough_preview_v4_rendering_and_manifest(mock_preview_environment: Path):
-    """Test Phase 10.3: rough_preview_v4.mp4 rendering with tight pacing and valid streams."""
+    """Test rough preview video rendering with tight pacing and valid streams."""
     manifest, video_path = build_rough_video_preview(
         source_path=mock_preview_environment.name,
         movie_id="test_preview_movie",
@@ -449,16 +449,16 @@ def test_rough_preview_v4_rendering_and_manifest(mock_preview_environment: Path)
     )
 
     preview_dir = mock_preview_environment / "preview"
-    v4_video = preview_dir / "rough_preview_v4.mp4"
-    assert v4_video.exists()
-    assert v4_video.stat().st_size > 0
+    video_file = preview_dir / "rough_preview.mp4"
+    assert video_file.exists()
+    assert video_file.stat().st_size > 0
 
-    # Probe v4 streams
+    # Probe streams
     cmd_probe = [
         "ffprobe", "-v", "error",
         "-show_entries", "stream=codec_type,codec_name,width,height,channels,sample_rate",
         "-of", "json",
-        str(v4_video),
+        str(video_file),
     ]
     res = subprocess.run(cmd_probe, capture_output=True, text=True, check=True)
     probe_data = json.loads(res.stdout)
@@ -467,18 +467,91 @@ def test_rough_preview_v4_rendering_and_manifest(mock_preview_environment: Path)
     a_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "audio")
 
     assert v_stream["codec_name"] == "h264"
-    assert v_stream["width"] == 1920
-    assert v_stream["height"] == 1080
+    assert v_stream["width"] in [1280, 1920]
+    assert v_stream["height"] in [720, 1080]
     assert a_stream["codec_name"] == "aac"
     assert a_stream["channels"] == 2
     assert a_stream["sample_rate"] == "44100"
 
-    # Verify v4 manifest
-    v4_manifest_file = preview_dir / "preview_manifest_v4.json"
-    assert v4_manifest_file.exists()
-    with open(v4_manifest_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    assert data["longest_freeze_seconds"] <= 2.0
-    assert data["longest_black_transition_seconds"] <= 3.0
+    # Verify manifest exists
+    assert (preview_dir / "preview_manifest.json").exists()
 
 
+def test_no_default_freezes_and_direct_cuts(mock_preview_environment: Path):
+    """Test Phase 10.4: Default behavior is NO freezes, with direct cuts between clips."""
+    builder = PreviewTimelineBuilder(
+        movie_id="test_preview_movie",
+        analysis_dir=mock_preview_environment,
+    )
+    manifest = builder.build_timeline()
+
+    # Default has 0 freezes
+    assert manifest.total_freeze_count == 0
+    assert manifest.longest_freeze_seconds == 0.0
+
+    # With optional freezes enabled, count <= 3 and duration <= 1.5s
+    manifest_accent = builder.build_timeline(allow_freeze=True, max_freeze_count=3, max_freeze_duration=1.5)
+    assert manifest_accent.total_freeze_count <= 3
+    assert manifest_accent.longest_freeze_seconds <= 1.5
+
+
+def test_rough_preview_v5_720p_rendering(mock_preview_environment: Path):
+    """Test rough_preview.mp4 / v6 renders in 1280x720 (720p) with AAC audio."""
+    manifest, video_path = build_rough_video_preview(
+        source_path=mock_preview_environment.name,
+        movie_id="test_preview_movie",
+        output_base_dir=mock_preview_environment.parent,
+        render_video=True,
+    )
+
+    preview_dir = mock_preview_environment / "preview"
+    video_file = preview_dir / "rough_preview.mp4"
+    assert video_file.exists()
+    assert video_file.stat().st_size > 0
+
+    # Probe streams
+    cmd_probe = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,width,height,channels,sample_rate",
+        "-of", "json",
+        str(video_file),
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True, check=True)
+    probe_data = json.loads(res.stdout)
+
+    v_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "video")
+    a_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "audio")
+
+    assert v_stream["codec_name"] == "h264"
+    assert v_stream["width"] == 1280
+    assert v_stream["height"] == 720
+    assert a_stream["codec_name"] == "aac"
+    assert a_stream["channels"] == 2
+    assert a_stream["sample_rate"] == "44100"
+
+
+def test_phase_10_5_short_transitions_and_high_moving_footage_density(mock_preview_environment: Path):
+    """Test Phase 10.5: Black transitions <= 0.5s, moving footage >= 85%, and 0 default freezes."""
+    builder = PreviewTimelineBuilder(
+        movie_id="test_preview_movie",
+        analysis_dir=mock_preview_environment,
+    )
+    manifest = builder.build_timeline()
+
+    assert manifest.longest_black_transition_seconds <= 0.5
+    assert manifest.longest_freeze_seconds == 0.0
+    assert manifest.total_freeze_count == 0
+    assert manifest.moving_footage_percentage >= 85.0
+
+
+def test_final_tail_duration_constraint(mock_preview_environment: Path):
+    """Test Phase 10.5: Final black transition tail duration cannot exceed 0.5s."""
+    builder = PreviewTimelineBuilder(
+        movie_id="test_preview_movie",
+        analysis_dir=mock_preview_environment,
+    )
+    manifest = builder.build_timeline()
+
+    last_segment = manifest.segments[-1]
+    last_item = last_segment.items[-1]
+    assert last_item.duration_seconds <= 0.5

@@ -125,8 +125,11 @@ class PreviewManifest:
     total_placeholder_seconds: float = 0.0
     total_freeze_seconds: float = 0.0
     total_black_transition_seconds: float = 0.0
+    total_freeze_count: int = 0
+    total_black_transition_count: int = 0
     longest_freeze_seconds: float = 0.0
     longest_black_transition_seconds: float = 0.0
+    moving_footage_percentage: float = 0.0
     video_output_path: Optional[str] = None
     audio_architecture: Dict[str, Any] = field(default_factory=lambda: {
         "narration_bus": {"role": "primary_voice", "ducking_depth_db": -14.0},
@@ -144,10 +147,12 @@ class PreviewManifest:
         transitions = [it for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]]
         placeholders = [it for it in all_items if it.item_type not in ["SOURCE_CLIP"]]
 
+        total_source_footage = sum(c.duration_seconds for c in clips)
         total_freeze_dur = sum(f.duration_seconds for f in freezes)
         total_trans_dur = sum(t.duration_seconds for t in transitions)
         max_freeze = max((f.duration_seconds for f in freezes), default=0.0)
         max_trans = max((t.duration_seconds for t in transitions), default=0.0)
+        pct_moving = round((total_source_footage / max(0.01, self.total_duration_seconds)) * 100.0, 1)
 
         return {
             "movie_id": self.movie_id,
@@ -158,8 +163,11 @@ class PreviewManifest:
             "total_segments": len(self.segments),
             "total_source_clips": len(clips),
             "total_placeholders": len(placeholders),
-            "total_source_footage_seconds": round(sum(c.duration_seconds for c in clips), 2),
+            "total_source_footage_seconds": round(total_source_footage, 2),
             "total_placeholder_seconds": round(sum(p.duration_seconds for p in placeholders), 2),
+            "moving_footage_percentage": pct_moving,
+            "total_freeze_count": len(freezes),
+            "total_black_transition_count": len(transitions),
             "total_freeze_seconds": round(total_freeze_dur, 2),
             "total_black_transition_seconds": round(total_trans_dur, 2),
             "longest_freeze_seconds": round(max_freeze, 2),
@@ -180,13 +188,16 @@ class PreviewManifest:
             movie_id=str(data.get("movie_id", "")),
             status=str(data.get("status", "PARTIAL")),
             total_duration_seconds=float(data.get("total_duration_seconds", 0.0)),
-            resolution=str(data.get("resolution", "1920x1080")),
+            resolution=str(data.get("resolution", "1280x720")),
             fps=float(data.get("fps", 30.0)),
             total_segments=int(data.get("total_segments", 0)),
             total_source_clips=int(data.get("total_source_clips", 0)),
             total_placeholders=int(data.get("total_placeholders", 0)),
             total_source_footage_seconds=float(data.get("total_source_footage_seconds", 0.0)),
             total_placeholder_seconds=float(data.get("total_placeholder_seconds", 0.0)),
+            moving_footage_percentage=float(data.get("moving_footage_percentage", 0.0)),
+            total_freeze_count=int(data.get("total_freeze_count", 0)),
+            total_black_transition_count=int(data.get("total_black_transition_count", 0)),
             total_freeze_seconds=float(data.get("total_freeze_seconds", 0.0)),
             total_black_transition_seconds=float(data.get("total_black_transition_seconds", 0.0)),
             longest_freeze_seconds=float(data.get("longest_freeze_seconds", 0.0)),

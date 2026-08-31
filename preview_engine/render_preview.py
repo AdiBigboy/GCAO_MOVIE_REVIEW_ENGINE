@@ -165,13 +165,28 @@ class RoughPreviewRenderer:
         logger.info("Saved preview captions to %s", self.output_srt_file)
         return self.output_srt_file
 
-    def _render_placeholder_chunk(self, item: TimelineItem, out_path: Path, ref_clip_path: Optional[Path] = None) -> Path:
+    def _parse_resolution(self, resolution_str: str) -> Tuple[int, int]:
+        """Parse width and height from resolution string (e.g. '1280x720')."""
+        try:
+            parts = resolution_str.lower().split("x")
+            return int(parts[0]), int(parts[1])
+        except Exception:
+            return 1280, 720
+
+    def _render_placeholder_chunk(
+        self,
+        item: TimelineItem,
+        out_path: Path,
+        ref_clip_path: Optional[Path] = None,
+        width: int = 1280,
+        height: int = 720,
+    ) -> Path:
         """
         Generate a clean visual filler chunk with silent audio:
-        - STILL_FREEZE: Short still frame bridge (<=2.0s).
+        - STILL_FREEZE: Short still frame bridge (<=1.5s).
         - BLACK_TRANSITION / PLACEHOLDER: Short clean black transition (<=3.0s).
         """
-        dur = max(0.5, item.duration_seconds)
+        dur = max(0.05, item.duration_seconds)
         is_still_freeze = item.item_type in ["STILL_FREEZE", "FREEZE"]
 
         # If this is a still freeze and a reference source clip is available, create a clean still frame hold
@@ -197,7 +212,7 @@ class RoughPreviewRenderer:
                     "-i", "anullsrc=r=44100:cl=stereo",
                     "-t", f"{dur:.2f}",
                     "-vf",
-                    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                    f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
                     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30",
                     "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                     "-shortest",
@@ -212,7 +227,7 @@ class RoughPreviewRenderer:
             "ffmpeg",
             "-y",
             "-f", "lavfi",
-            "-i", f"color=c=0x08080c:s=1920x1080:d={dur:.2f}:r=30",
+            "-i", f"color=c=0x08080c:s={width}x{height}:d={dur:.2f}:r=30",
             "-f", "lavfi",
             "-i", "anullsrc=r=44100:cl=stereo",
             "-t", f"{dur:.2f}",
@@ -231,7 +246,7 @@ class RoughPreviewRenderer:
         if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
             cmd_fallback = [
                 "ffmpeg", "-y",
-                "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={dur:.2f}:r=30",
+                "-f", "lavfi", "-i", f"color=c=black:s={width}x{height}:d={dur:.2f}:r=30",
                 "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                 "-t", f"{dur:.2f}",
                 "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30",
@@ -243,12 +258,18 @@ class RoughPreviewRenderer:
 
         return out_path
 
-    def _render_source_clip_chunk(self, item: TimelineItem, out_path: Path) -> Path:
-        """Normalize source clip to 1920x1080 @ 30fps preserving original audio and aspect ratio."""
+    def _render_source_clip_chunk(
+        self,
+        item: TimelineItem,
+        out_path: Path,
+        width: int = 1280,
+        height: int = 720,
+    ) -> Path:
+        """Normalize source clip to target resolution @ 30fps preserving original audio and aspect ratio."""
         clip_file = Path(item.clip_path) if item.clip_path else None
         if not clip_file or not clip_file.exists() or clip_file.stat().st_size == 0:
             # Fallback to placeholder if clip file is missing
-            return self._render_placeholder_chunk(item, out_path)
+            return self._render_placeholder_chunk(item, out_path, width=width, height=height)
 
         dur = max(0.5, item.duration_seconds)
         # Attempt direct normalization with original audio stream
@@ -258,7 +279,7 @@ class RoughPreviewRenderer:
             "-i", str(clip_file),
             "-t", str(dur),
             "-vf",
-            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-pix_fmt", "yuv420p",
@@ -280,7 +301,7 @@ class RoughPreviewRenderer:
                 "-i", "anullsrc=r=44100:cl=stereo",
                 "-t", str(dur),
                 "-vf",
-                "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
                 "-map", "0:v:0",
                 "-map", "1:a:0",
                 "-c:v", "libx264",
@@ -296,14 +317,14 @@ class RoughPreviewRenderer:
             ]
             subprocess.run(cmd_silent_audio, capture_output=True)
             if not out_path.exists() or out_path.stat().st_size == 0:
-                return self._render_placeholder_chunk(item, out_path, ref_clip_path=clip_file)
+                return self._render_placeholder_chunk(item, out_path, ref_clip_path=clip_file, width=width, height=height)
 
         return out_path
 
     def render(self, manifest: Optional[PreviewManifest] = None) -> Path:
         """
         Execute full clean render pipeline: chunk normalization, original audio preservation,
-        and clean concatenation into rough_preview_v4.mp4.
+        and clean concatenation into rough_preview_v5.mp4.
         """
         if manifest is None:
             builder = PreviewTimelineBuilder(
@@ -316,6 +337,8 @@ class RoughPreviewRenderer:
         self.preview_dir.mkdir(parents=True, exist_ok=True)
         self.chunks_dir.mkdir(parents=True, exist_ok=True)
 
+        width, height = self._parse_resolution(manifest.resolution)
+
         # 1. Generate standalone SRT sidecar captions for inspection
         self.generate_srt_captions(manifest)
 
@@ -326,7 +349,7 @@ class RoughPreviewRenderer:
         for idx, it in enumerate(all_items):
             chunk_file = self.chunks_dir / f"{it.item_id}_{it.item_type}.mp4"
             if it.item_type == "SOURCE_CLIP":
-                self._render_source_clip_chunk(it, chunk_file)
+                self._render_source_clip_chunk(it, chunk_file, width=width, height=height)
             else:
                 # Find nearest source clip in timeline to use as clean freeze still background
                 ref_clip: Optional[Path] = None
@@ -336,7 +359,7 @@ class RoughPreviewRenderer:
                     ref_clip = Path(str(all_items[idx - 1].clip_path))
                 elif idx < len(all_items) - 1 and all_items[idx + 1].clip_path:
                     ref_clip = Path(str(all_items[idx + 1].clip_path))
-                self._render_placeholder_chunk(it, chunk_file, ref_clip_path=ref_clip)
+                self._render_placeholder_chunk(it, chunk_file, ref_clip_path=ref_clip, width=width, height=height)
             chunk_files.append(chunk_file)
 
         # 3. Create concat list
@@ -346,8 +369,8 @@ class RoughPreviewRenderer:
                 # Use forward slashes for FFmpeg concat safe path
                 f.write(f"file '{ch.resolve().as_posix()}'\n")
 
-        # 4. Concatenate chunks into final clean rough_preview_v4.mp4 (video + audio)
-        output_v4 = self.preview_dir / "rough_preview_v4.mp4"
+        # 4. Concatenate chunks into final clean rough_preview_v6.mp4 (video + audio)
+        output_v6 = self.preview_dir / "rough_preview_v6.mp4"
         cmd_concat = [
             "ffmpeg",
             "-y",
@@ -359,29 +382,29 @@ class RoughPreviewRenderer:
             "-crf", "24",
             "-c:a", "aac",
             "-b:a", "128k",
-            str(output_v4),
+            str(output_v6),
         ]
         res_concat = subprocess.run(cmd_concat, capture_output=True, text=True)
-        if res_concat.returncode != 0 or not output_v4.exists():
+        if res_concat.returncode != 0 or not output_v6.exists():
             raise VideoRenderError(f"FFmpeg concatenation failed: {res_concat.stderr}")
 
         # Also create copy rough_preview.mp4
         try:
-            shutil.copy2(output_v4, self.output_video_file)
+            shutil.copy2(output_v6, self.output_video_file)
         except Exception:
             pass
 
-        # Save V4 manifest and standard manifest
-        manifest_v4_path = self.preview_dir / "preview_manifest_v4.json"
-        with open(manifest_v4_path, "w", encoding="utf-8") as f:
+        # Save V6 manifest and standard manifest
+        manifest_v6_path = self.preview_dir / "preview_manifest_v6.json"
+        with open(manifest_v6_path, "w", encoding="utf-8") as f:
             f.write(manifest.to_json(indent=2))
 
         manifest_path = self.preview_dir / "preview_manifest.json"
         with open(manifest_path, "w", encoding="utf-8") as f:
             f.write(manifest.to_json(indent=2))
 
-        logger.info("Successfully rendered clean rough preview v4 video with original audio to %s", output_v4)
-        return output_v4
+        logger.info("Successfully rendered clean rough preview v6 video with original audio to %s", output_v6)
+        return output_v6
 
 
 # ==============================================================================

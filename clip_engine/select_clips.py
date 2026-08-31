@@ -122,10 +122,11 @@ class SourceClipSelector:
 
         return script_doc, story_doc, events_data, metadata_data
 
-    def select(self) -> ClipPlanDocument:
+    def select(self, expand_coverage: bool = False) -> ClipPlanDocument:
         """
         Build the complete ClipPlanDocument mapping each narration segment
         to short non-contiguous supporting source clips.
+        When expand_coverage=True, incorporates all grounded action events for continuous visual flow.
         """
         script_doc, story_doc, events_data, metadata_data = self.load_inputs()
 
@@ -167,26 +168,29 @@ class SourceClipSelector:
             if not action_event_indices and cand_event_indices:
                 action_event_indices = cand_event_indices
 
-            # Determine number of clips for this segment based on importance
-            # Importance >= 7: 2 to 3 clips; 4-6: 1 to 2 clips; <= 3: 1 clip
-            if script_seg.importance >= 7:
-                target_clip_count = min(3, len(action_event_indices))
-                target_clip_count = max(2, target_clip_count) if len(action_event_indices) >= 2 else 1
-            elif script_seg.importance >= 4:
-                target_clip_count = min(2, len(action_event_indices))
-                target_clip_count = max(1, target_clip_count)
-            else:
-                target_clip_count = 1
-
-            # Subsample evenly across available events in this segment
-            if len(action_event_indices) > target_clip_count:
-                step = len(action_event_indices) / float(target_clip_count)
-                chosen_indices = [
-                    action_event_indices[int(i * step)]
-                    for i in range(target_clip_count)
-                ]
-            else:
+            if expand_coverage:
                 chosen_indices = list(action_event_indices)
+            else:
+                # Determine number of clips for this segment based on importance
+                # Importance >= 7: 2 to 3 clips; 4-6: 1 to 2 clips; <= 3: 1 clip
+                if script_seg.importance >= 7:
+                    target_clip_count = min(3, len(action_event_indices))
+                    target_clip_count = max(2, target_clip_count) if len(action_event_indices) >= 2 else 1
+                elif script_seg.importance >= 4:
+                    target_clip_count = min(2, len(action_event_indices))
+                    target_clip_count = max(1, target_clip_count)
+                else:
+                    target_clip_count = 1
+
+                # Subsample evenly across available events in this segment
+                if len(action_event_indices) > target_clip_count:
+                    step = len(action_event_indices) / float(target_clip_count)
+                    chosen_indices = [
+                        action_event_indices[int(i * step)]
+                        for i in range(target_clip_count)
+                    ]
+                else:
+                    chosen_indices = list(action_event_indices)
 
             for ev_idx in chosen_indices:
                 ev = events_by_idx.get(ev_idx, {})
@@ -291,10 +295,10 @@ class SourceClipSelector:
     def extract_preview_clips(
         self,
         plan_doc: ClipPlanDocument,
-        max_previews: int = 10,
+        max_previews: Optional[int] = None,
     ) -> List[Path]:
         """
-        Extract up to max_previews short clips for human inspection only.
+        Extract short preview clips for human inspection only.
         Does NOT render full review video.
         """
         source_path_to_use = self.movie_source_path
@@ -321,7 +325,9 @@ class SourceClipSelector:
         preview_dir.mkdir(parents=True, exist_ok=True)
 
         extracted_files: List[Path] = []
-        all_clips = [c for s in plan_doc.segments for c in s.clips][:max_previews]
+        all_clips = [c for s in plan_doc.segments for c in s.clips]
+        if max_previews is not None:
+            all_clips = all_clips[:max_previews]
 
         for clip in all_clips:
             out_file = preview_dir / f"{clip.clip_id}_{clip.source_start_seconds:.1f}s.mp4"
@@ -387,6 +393,7 @@ def generate_movie_clip_plan(
     output_base_dir: Optional[Path] = None,
     max_clip_duration_seconds: float = 3.0,
     extract_preview: bool = False,
+    expand_coverage: bool = True,
     force: bool = False,
 ) -> ClipPlanDocument:
     """
@@ -404,7 +411,6 @@ def generate_movie_clip_plan(
 
     out_base = output_base_dir or ANALYSIS_DIR
     analysis_dir = out_base / assigned_movie_id
-
     if not analysis_dir.exists():
         raise ClipSelectionError(
             f"Analysis directory not found for movie '{assigned_movie_id}' at {analysis_dir}"
@@ -417,11 +423,11 @@ def generate_movie_clip_plan(
         max_clip_duration_seconds=max_clip_duration_seconds,
     )
 
-    plan_doc = selector.select()
+    plan_doc = selector.select(expand_coverage=expand_coverage)
     selector.save_clip_plan(plan_doc)
 
     if extract_preview:
-        selector.extract_preview_clips(plan_doc, max_previews=10)
+        selector.extract_preview_clips(plan_doc, max_previews=None)
 
     return plan_doc
 
@@ -457,7 +463,13 @@ def main():
     parser.add_argument(
         "--preview",
         action="store_true",
-        help="Extract up to 10 short MP4 preview snippets for human inspection.",
+        help="Extract short MP4 preview snippets for human inspection.",
+    )
+    parser.add_argument(
+        "--expand-coverage",
+        action="store_true",
+        default=True,
+        help="Incorporate all grounded action events for continuous visual flow (default: True).",
     )
 
     args = parser.parse_args()
@@ -471,6 +483,7 @@ def main():
             output_base_dir=out_base,
             max_clip_duration_seconds=args.max_duration,
             extract_preview=args.preview,
+            expand_coverage=args.expand_coverage,
         )
         print("\n" + "=" * 60)
         print("SOURCE CLIP SELECTION COMPLETE (Phase 9)")

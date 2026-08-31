@@ -39,22 +39,25 @@ class PreviewTimelineBuilder:
         self.analysis_dir = analysis_dir
 
         self.script_file = analysis_dir / "script.json"
+        self.clip_plan_dev_file = analysis_dir / "clip_plan_dev.json"
         self.clip_plan_file = analysis_dir / "clip_plan.json"
         self.preview_dir = analysis_dir / "preview"
         self.clip_previews_dir = analysis_dir / "clip_previews"
         self.output_manifest_file = self.preview_dir / "preview_manifest.json"
 
     def load_inputs(self) -> Tuple[ScriptDocument, ClipPlanDocument]:
-        """Load script.json and clip_plan.json."""
+        """Load script.json and clip_plan_dev.json / clip_plan.json."""
         if not self.script_file.exists():
             raise TimelineBuildError(f"script.json not found in {self.analysis_dir}")
-        if not self.clip_plan_file.exists():
+
+        target_plan_file = self.clip_plan_dev_file if self.clip_plan_dev_file.exists() else self.clip_plan_file
+        if not target_plan_file.exists():
             raise TimelineBuildError(f"clip_plan.json not found in {self.analysis_dir}")
 
         with open(self.script_file, "r", encoding="utf-8") as f:
             script_doc = ScriptDocument.from_dict(json.load(f))
 
-        with open(self.clip_plan_file, "r", encoding="utf-8") as f:
+        with open(target_plan_file, "r", encoding="utf-8") as f:
             clip_plan_doc = ClipPlanDocument.from_dict(json.load(f))
 
         return script_doc, clip_plan_doc
@@ -77,14 +80,20 @@ class PreviewTimelineBuilder:
 
     def build_timeline(
         self,
-        default_freeze_duration: float = 1.0,
-        max_freeze_duration: float = 2.0,
-        default_black_transition_duration: float = 2.0,
-        max_black_transition_duration: float = 3.0,
+        default_scene_transition_duration: float = 0.3,
+        max_black_transition_duration: float = 0.5,
+        allow_freeze: bool = False,
+        max_freeze_count: int = 3,
+        max_freeze_duration: float = 1.5,
+        resolution: str = "1280x720",
+        fps: float = 30.0,
     ) -> PreviewManifest:
         """
-        Build a cinematic preview timeline using short freeze bridges (<=2s) and
-        short black transitions (<=3s) between scenes/segments.
+        Build a fast-moving preview timeline:
+        - Direct cuts between source clips within scenes
+        - Default: NO freeze frames (max 3 rare accent freezes <=1.5s if explicitly enabled)
+        - Short black/dip transitions (<=0.5s, default 0.3s) at scene/segment boundaries
+        - No artificial visual extension to narration estimate
         """
         script_doc, clip_plan_doc = self.load_inputs()
 
@@ -95,6 +104,7 @@ class PreviewTimelineBuilder:
         segment_timelines: List[SegmentTimeline] = []
         current_time = 0.0
         item_counter = 1
+        freeze_counter = 0
 
         for seg_idx, script_seg in enumerate(script_doc.segments, start=1):
             seg_start = current_time
@@ -103,8 +113,8 @@ class PreviewTimelineBuilder:
             t_cursor = seg_start
 
             if not clips:
-                # No clips (e.g. continuation marker): Short black/dark transition (<=3.0s)
-                trans_dur = min(max_black_transition_duration, default_black_transition_duration + 0.5)
+                # Segment without clips (e.g. continuation outro): Single short black transition (<=3.0s)
+                trans_dur = min(max_black_transition_duration, default_scene_transition_duration)
                 item = TimelineItem(
                     item_id=f"ITEM_{item_counter:03d}",
                     item_type="BLACK_TRANSITION",
@@ -112,7 +122,7 @@ class PreviewTimelineBuilder:
                     end_time_seconds=round(t_cursor + trans_dur, 2),
                     duration_seconds=round(trans_dur, 2),
                     caption_text=script_seg.text,
-                    label=f"Continuation Transition: {script_seg.segment_id}",
+                    label=f"Scene Transition: {script_seg.segment_id}",
                     has_source_audio=False,
                     audio_track_type="SILENCE",
                     future_narration_point=True,
@@ -150,35 +160,36 @@ class PreviewTimelineBuilder:
                     item_counter += 1
                     t_cursor = c_end
 
-                    # 2. Short Freeze Bridge (<=2.0s, default 1.0s, with silent audio)
-                    freeze_dur = min(max_freeze_duration, default_freeze_duration)
-                    f_start = t_cursor
-                    f_end = round(t_cursor + freeze_dur, 2)
-                    f_dur = round(f_end - f_start, 2)
-                    seg_items.append(
-                        TimelineItem(
-                            item_id=f"ITEM_{item_counter:03d}",
-                            item_type="STILL_FREEZE",
-                            start_time_seconds=round(f_start, 2),
-                            end_time_seconds=round(f_end, 2),
-                            duration_seconds=f_dur,
-                            source_clip_id=clip.clip_id,
-                            source_event_index=clip.source_event_index,
-                            source_scene_id=clip.source_scene_id,
-                            caption_text=script_seg.text,
-                            clip_path=str(clip_file) if clip_file else None,
-                            label=f"Still Hold: {clip.clip_id}",
-                            has_source_audio=False,
-                            audio_track_type="SILENCE",
-                            future_narration_point=True,
-                            audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
+                    # 2. Optional rare accent freeze (strictly if allow_freeze and within budget)
+                    if allow_freeze and freeze_counter < max_freeze_count:
+                        f_dur = min(max_freeze_duration, 1.0)
+                        f_start = t_cursor
+                        f_end = round(t_cursor + f_dur, 2)
+                        seg_items.append(
+                            TimelineItem(
+                                item_id=f"ITEM_{item_counter:03d}",
+                                item_type="STILL_FREEZE",
+                                start_time_seconds=round(f_start, 2),
+                                end_time_seconds=round(f_end, 2),
+                                duration_seconds=f_dur,
+                                source_clip_id=clip.clip_id,
+                                source_event_index=clip.source_event_index,
+                                source_scene_id=clip.source_scene_id,
+                                caption_text=script_seg.text,
+                                clip_path=str(clip_file) if clip_file else None,
+                                label=f"Accent Still: {clip.clip_id}",
+                                has_source_audio=False,
+                                audio_track_type="SILENCE",
+                                future_narration_point=True,
+                                audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
+                            )
                         )
-                    )
-                    item_counter += 1
-                    t_cursor = f_end
+                        item_counter += 1
+                        freeze_counter += 1
+                        t_cursor = f_end
 
-                # 3. Short Black/Dark Transition at segment / scene shift (<=3.0s)
-                trans_dur = min(max_black_transition_duration, default_black_transition_duration)
+                # 3. Short Black/Dip Transition at segment / scene shift (<=3.0s)
+                trans_dur = min(max_black_transition_duration, default_scene_transition_duration)
                 tr_start = t_cursor
                 tr_end = round(t_cursor + trans_dur, 2)
                 tr_dur = round(tr_end - tr_start, 2)
@@ -218,27 +229,40 @@ class PreviewTimelineBuilder:
         all_items = [it for s in segment_timelines for it in s.items]
         clips_count = sum(1 for it in all_items if it.item_type == "SOURCE_CLIP")
         placeholders_count = sum(1 for it in all_items if it.item_type != "SOURCE_CLIP")
+        freezes = [it for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]]
+        transitions = [it for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]]
+        source_footage_seconds = round(
+            sum(it.duration_seconds for it in all_items if it.item_type == "SOURCE_CLIP"),
+            2,
+        )
+        moving_footage_percentage = round(
+            (source_footage_seconds / max(0.01, total_duration)) * 100.0,
+            1,
+        )
 
         manifest = PreviewManifest(
             movie_id=self.movie_id,
             status=script_doc.status,
             total_duration_seconds=total_duration,
-            resolution="1920x1080",
-            fps=30.0,
+            resolution=resolution,
+            fps=fps,
             total_segments=len(segment_timelines),
             total_source_clips=clips_count,
             total_placeholders=placeholders_count,
-            total_source_footage_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type == "SOURCE_CLIP"), 2),
+            total_source_footage_seconds=source_footage_seconds,
             total_placeholder_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type != "SOURCE_CLIP"), 2),
-            total_freeze_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]), 2),
-            total_black_transition_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]), 2),
-            longest_freeze_seconds=round(max((it.duration_seconds for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]), default=0.0), 2),
-            longest_black_transition_seconds=round(max((it.duration_seconds for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]), default=0.0), 2),
-            video_output_path=str(self.preview_dir / "rough_preview_v4.mp4"),
+            moving_footage_percentage=moving_footage_percentage,
+            total_freeze_count=len(freezes),
+            total_black_transition_count=len(transitions),
+            total_freeze_seconds=round(sum(f.duration_seconds for f in freezes), 2),
+            total_black_transition_seconds=round(sum(t.duration_seconds for t in transitions), 2),
+            longest_freeze_seconds=round(max((f.duration_seconds for f in freezes), default=0.0), 2),
+            longest_black_transition_seconds=round(max((t.duration_seconds for t in transitions), default=0.0), 2),
+            video_output_path=str(self.preview_dir / "rough_preview_v6.mp4"),
             segments=segment_timelines,
             created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             warnings=[] if script_doc.status == "COMPLETE" else [
-                "Preview built for partial movie coverage with <=2.0s freeze bridges and <=3.0s black transitions."
+                "Preview built for partial movie coverage with continuous moving footage and <=0.5s transitions."
             ],
         )
 
