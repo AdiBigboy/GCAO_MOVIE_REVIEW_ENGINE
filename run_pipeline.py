@@ -69,6 +69,10 @@ from clip_engine.select_clips import (
     ClipPlanDocument,
     generate_movie_clip_plan,
 )
+from preview_engine.render_preview import (
+    PreviewManifest,
+    build_rough_video_preview,
+)
 
 logger = logging.getLogger("pipeline_runner")
 
@@ -179,7 +183,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 1: Ingest Movie
     # --------------------------------------------------------------------------
-    print("[1/8] Ingesting movie metadata...")
+    print("[1/9] Ingesting movie metadata...")
     t0 = time.time()
     try:
         metadata: MovieMetadata = ingest_movie(
@@ -229,7 +233,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 2: Sample Movie Frames
     # --------------------------------------------------------------------------
-    print("[2/8] Sampling timeline frames...")
+    print("[2/9] Sampling timeline frames...")
     t0 = time.time()
     try:
         timeline: TimelineIndex = sample_movie_frames(
@@ -248,10 +252,11 @@ def run_movie_pipeline(
             "frames_directory": "frames",
             "sampling_interval_seconds": timeline.sampling_interval_seconds,
             "total_samples": timeline.total_samples,
+            "total_frames_extracted": timeline.total_samples,
         }
         print(
-            f"      -> Success ({t_sample:.2f}s): {timeline.total_samples} frames extracted "
-            f"at interval {timeline.sampling_interval_seconds:.1f}s"
+            f"      -> Success ({t_sample:.2f}s): {timeline.total_samples} frames sampled "
+            f"(interval: {timeline.sampling_interval_seconds}s, quality: {jpeg_quality})"
         )
     except Exception as exc:
         t_sample = time.time() - t0
@@ -277,7 +282,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 3: Extract Movie Dialogue
     # --------------------------------------------------------------------------
-    print("[3/8] Extracting dialogue and subtitles...")
+    print("[3/9] Extracting dialogue and subtitles...")
     t0 = time.time()
     try:
         dialogue: DialogueDocument = extract_movie_dialogue(
@@ -328,7 +333,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 4: Multimodal Timeline Event Analysis
     # --------------------------------------------------------------------------
-    print("[4/8] Analyzing timeline events...")
+    print("[4/9] Analyzing timeline events...")
     t0 = time.time()
     try:
         events: EventsDocument = analyze_timeline_events(
@@ -381,7 +386,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 5: Track Character Identities & Memory
     # --------------------------------------------------------------------------
-    print("[5/8] Tracking character identities & memory...")
+    print("[5/9] Tracking character identities & memory...")
     t0 = time.time()
     try:
         characters: CharactersDocument = track_movie_characters(
@@ -435,7 +440,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 7: Story Reconstruction Engine
     # --------------------------------------------------------------------------
-    print("[6/8] Reconstructing movie story...")
+    print("[6/9] Reconstructing movie story...")
     t0 = time.time()
     try:
         story: StoryDocument = reconstruct_movie_story(
@@ -485,7 +490,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 8: Narration & Script Generation Engine
     # --------------------------------------------------------------------------
-    print("[7/8] Planning narrative and generating Malay review script...")
+    print("[7/9] Planning narrative and generating Malay review script...")
     t0 = time.time()
     try:
         plan_doc: NarrativePlanDocument = generate_movie_narrative_plan(
@@ -540,7 +545,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 9: Source Clip Selection Engine
     # --------------------------------------------------------------------------
-    print("[8/8] Selecting supporting source clips (<= 3.0s)...")
+    print("[8/9] Selecting supporting source clips (<= 3.0s)...")
     t0 = time.time()
     try:
         clip_plan: ClipPlanDocument = generate_movie_clip_plan(
@@ -570,6 +575,55 @@ def run_movie_pipeline(
         phase_results["phase_9_select_clips"] = {
             "status": "FAILED",
             "duration_seconds": round(t_clip, 3),
+            "error": str(exc),
+        }
+        _write_failed_summary(
+            summary_file_path=summary_file_path,
+            movie_id=assigned_movie_id,
+            source_filename=resolved_source.name,
+            source_path=str(resolved_source),
+            started_at=started_at,
+            duration=time.time() - pipeline_start,
+            phase_results=phase_results,
+            error=err_msg,
+        )
+        raise
+
+    # --------------------------------------------------------------------------
+    # Phase 10: Rough Video Preview Builder
+    # --------------------------------------------------------------------------
+    print("[9/9] Generating rough video preview (1920x1080 + captions)...")
+    t0 = time.time()
+    try:
+        preview_manifest, preview_video_path = build_rough_video_preview(
+            source_path=resolved_source,
+            movie_id=assigned_movie_id,
+            output_base_dir=out_base,
+            render_video=(not dry_run),
+            force=force,
+        )
+        t_preview = time.time() - t0
+        phase_results["phase_10_rough_preview"] = {
+            "status": "SUCCESS" if not dry_run else "DRY_RUN",
+            "duration_seconds": round(t_preview, 3),
+            "manifest_file": "preview/preview_manifest.json",
+            "video_file": "preview/rough_preview.mp4" if (preview_video_path and not dry_run) else None,
+            "total_segments": preview_manifest.total_segments,
+            "total_clips": preview_manifest.total_source_clips,
+            "total_placeholders": preview_manifest.total_placeholders,
+            "total_duration_seconds": preview_manifest.total_duration_seconds,
+        }
+        print(
+            f"      -> Success ({t_preview:.2f}s): Rough preview built "
+            f"({preview_manifest.total_duration_seconds:.1f}s, {preview_manifest.total_source_clips} clips, {preview_manifest.total_placeholders} holds)"
+        )
+    except Exception as exc:
+        t_preview = time.time() - t0
+        err_msg = f"Phase 10 (Rough Preview) failed: {exc}"
+        logger.error(err_msg, exc_info=True)
+        phase_results["phase_10_rough_preview"] = {
+            "status": "FAILED",
+            "duration_seconds": round(t_preview, 3),
             "error": str(exc),
         }
         _write_failed_summary(
