@@ -1,4 +1,4 @@
-﻿"""
+"""
 Automated Integration Test Suite for Phase 6: End-to-End Pipeline Runner
 Tests end-to-end sequential execution, error handling, order enforcement, and summary creation.
 """
@@ -121,6 +121,7 @@ def test_pipeline_end_to_end_mock_success(pipeline_synthetic_movie: Path, tmp_pa
     assert (movie_dir / "subtitles" / "raw_subtitle.srt").exists()
     assert (movie_dir / "events.json").exists()
     assert (movie_dir / "characters.json").exists()
+    assert (movie_dir / "story.json").exists()
     assert (movie_dir / "pipeline_summary.json").exists()
 
     # Validate pipeline summary contents
@@ -135,10 +136,12 @@ def test_pipeline_end_to_end_mock_success(pipeline_synthetic_movie: Path, tmp_pa
     assert data["phases"]["phase_3_extract_dialogue"]["total_entries"] == 3
     assert data["phases"]["phase_4_analyze_events"]["total_events"] == 4
     assert data["phases"]["phase_5_track_characters"]["total_characters"] >= 1
+    assert "phase_7_reconstruct_story" in data["phases"]
+    assert data["phases"]["phase_7_reconstruct_story"]["status"] == "SUCCESS"
 
 
 def test_pipeline_execution_order_and_call_sequence(pipeline_synthetic_movie: Path, tmp_path: Path):
-    """Verify that phases are called strictly in sequential order (1 -> 2 -> 3 -> 4 -> 5)."""
+    """Verify that phases are called strictly in sequential order (1 -> 2 -> 3 -> 4 -> 5 -> 7)."""
     call_order = []
 
     import run_pipeline
@@ -148,6 +151,7 @@ def test_pipeline_execution_order_and_call_sequence(pipeline_synthetic_movie: Pa
     orig_dialogue = run_pipeline.extract_movie_dialogue
     orig_events = run_pipeline.analyze_timeline_events
     orig_chars = run_pipeline.track_movie_characters
+    orig_story = run_pipeline.reconstruct_movie_story
 
     def wrap_ingest(*args, **kwargs):
         call_order.append(1)
@@ -169,6 +173,10 @@ def test_pipeline_execution_order_and_call_sequence(pipeline_synthetic_movie: Pa
         call_order.append(5)
         return orig_chars(*args, **kwargs)
 
+    def wrap_story(*args, **kwargs):
+        call_order.append(6)
+        return orig_story(*args, **kwargs)
+
     out_dir = tmp_path / "analysis_order"
     mock_provider = MockAIProvider()
 
@@ -176,7 +184,8 @@ def test_pipeline_execution_order_and_call_sequence(pipeline_synthetic_movie: Pa
          patch("run_pipeline.sample_movie_frames", side_effect=wrap_sample), \
          patch("run_pipeline.extract_movie_dialogue", side_effect=wrap_dialogue), \
          patch("run_pipeline.analyze_timeline_events", side_effect=wrap_events), \
-         patch("run_pipeline.track_movie_characters", side_effect=wrap_chars):
+         patch("run_pipeline.track_movie_characters", side_effect=wrap_chars), \
+         patch("run_pipeline.reconstruct_movie_story", side_effect=wrap_story):
 
         run_movie_pipeline(
             source_path=pipeline_synthetic_movie,
@@ -184,7 +193,7 @@ def test_pipeline_execution_order_and_call_sequence(pipeline_synthetic_movie: Pa
             ai_provider=mock_provider,
         )
 
-    assert call_order == [1, 2, 3, 4, 5], f"Phase call order was incorrect: {call_order}"
+    assert call_order == [1, 2, 3, 4, 5, 6], f"Phase call order was incorrect: {call_order}"
 
 
 def test_pipeline_intermediate_failure_propagation(pipeline_synthetic_movie: Path, tmp_path: Path):
@@ -211,9 +220,10 @@ def test_pipeline_intermediate_failure_propagation(pipeline_synthetic_movie: Pat
     assert data["phases"]["phase_1_ingest"]["status"] == "SUCCESS"
     assert data["phases"]["phase_2_sample_frames"]["status"] == "SUCCESS"
     assert data["phases"]["phase_3_extract_dialogue"]["status"] == "FAILED"
-    # Phase 4 and 5 must not have executed
+    # Phase 4, 5, 7 must not have executed
     assert "phase_4_analyze_events" not in data["phases"]
     assert "phase_5_track_characters" not in data["phases"]
+    assert "phase_7_reconstruct_story" not in data["phases"]
 
 
 def test_pipeline_dry_run_mode(pipeline_synthetic_movie: Path, tmp_path: Path):
@@ -231,6 +241,7 @@ def test_pipeline_dry_run_mode(pipeline_synthetic_movie: Path, tmp_path: Path):
     assert summary.status == "DRY_RUN"
     assert summary.phases["phase_4_analyze_events"]["status"] == "DRY_RUN"
     assert summary.phases["phase_5_track_characters"]["status"] == "DRY_RUN"
+    assert summary.phases["phase_7_reconstruct_story"]["status"] == "DRY_RUN"
     assert mock_p.call_count == 0
 
 
@@ -254,12 +265,14 @@ def test_pipeline_cli_invocation(pipeline_synthetic_movie: Path, tmp_path: Path)
     )
 
     assert res.returncode == 0, f"CLI pipeline execution failed:\nStdout: {res.stdout}\nStderr: {res.stderr}"
-    assert "[1/5] Ingesting movie metadata..." in res.stdout
-    assert "[2/5] Sampling timeline frames..." in res.stdout
-    assert "[3/5] Extracting dialogue and subtitles..." in res.stdout
-    assert "[4/5] Analyzing timeline events..." in res.stdout
-    assert "[5/5] Tracking character identities & memory..." in res.stdout
+    assert "[1/6] Ingesting movie metadata..." in res.stdout
+    assert "[2/6] Sampling timeline frames..." in res.stdout
+    assert "[3/6] Extracting dialogue and subtitles..." in res.stdout
+    assert "[4/6] Analyzing timeline events..." in res.stdout
+    assert "[5/6] Tracking character identities & memory..." in res.stdout
+    assert "[6/6] Reconstructing movie story..." in res.stdout
     assert "[SUCCESS] PIPELINE COMPLETED" in res.stdout
 
     summary_json = out_dir / "pipeline_test_movie_2026" / "pipeline_summary.json"
     assert summary_json.exists()
+

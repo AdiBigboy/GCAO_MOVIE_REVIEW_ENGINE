@@ -1,4 +1,4 @@
-﻿"""
+"""
 Movie Review Engine - Phase 6: End-to-End Pipeline Runner
 Sequentially executes Phase 1 to Phase 5 across a movie file and generates a structured summary.
 """
@@ -52,6 +52,10 @@ from movie_analyzer.analyze_events import (
 from movie_analyzer.track_characters import (
     CharactersDocument,
     track_movie_characters,
+)
+from story_engine.reconstruct_story import (
+    StoryDocument,
+    reconstruct_movie_story,
 )
 
 logger = logging.getLogger("pipeline_runner")
@@ -163,7 +167,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 1: Ingest Movie
     # --------------------------------------------------------------------------
-    print("[1/5] Ingesting movie metadata...")
+    print("[1/6] Ingesting movie metadata...")
     t0 = time.time()
     try:
         metadata: MovieMetadata = ingest_movie(
@@ -213,7 +217,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 2: Sample Movie Frames
     # --------------------------------------------------------------------------
-    print("[2/5] Sampling timeline frames...")
+    print("[2/6] Sampling timeline frames...")
     t0 = time.time()
     try:
         timeline: TimelineIndex = sample_movie_frames(
@@ -261,7 +265,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 3: Extract Movie Dialogue
     # --------------------------------------------------------------------------
-    print("[3/5] Extracting dialogue and subtitles...")
+    print("[3/6] Extracting dialogue and subtitles...")
     t0 = time.time()
     try:
         dialogue: DialogueDocument = extract_movie_dialogue(
@@ -312,7 +316,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 4: Multimodal Timeline Event Analysis
     # --------------------------------------------------------------------------
-    print("[4/5] Analyzing timeline events...")
+    print("[4/6] Analyzing timeline events...")
     t0 = time.time()
     try:
         events: EventsDocument = analyze_timeline_events(
@@ -365,7 +369,7 @@ def run_movie_pipeline(
     # --------------------------------------------------------------------------
     # Phase 5: Track Character Identities & Memory
     # --------------------------------------------------------------------------
-    print("[5/5] Tracking character identities & memory...")
+    print("[5/6] Tracking character identities & memory...")
     t0 = time.time()
     try:
         characters: CharactersDocument = track_movie_characters(
@@ -417,7 +421,57 @@ def run_movie_pipeline(
         raise
 
     # --------------------------------------------------------------------------
-    # Phase 6: Final Summary Generation
+    # Phase 7: Story Reconstruction Engine
+    # --------------------------------------------------------------------------
+    print("[6/6] Reconstructing movie story...")
+    t0 = time.time()
+    try:
+        story: StoryDocument = reconstruct_movie_story(
+            source_path=resolved_source,
+            movie_id=assigned_movie_id,
+            output_base_dir=out_base,
+            force=force,
+        )
+        t_story = time.time() - t0
+        phase_results["phase_7_reconstruct_story"] = {
+            "status": "SUCCESS" if not dry_run else "DRY_RUN",
+            "duration_seconds": round(t_story, 3),
+            "artifact_file": "story.json" if not dry_run else None,
+            "story_status": story.story_status,
+            "scenes_count": len(story.scenes),
+            "beats_count": len(story.beats),
+            "causal_links_count": len(story.causal_links),
+            "character_arcs_count": len(story.character_arcs),
+            "protagonists_count": len(story.protagonist_candidates),
+        }
+        print(
+            f"      -> Success ({t_story:.2f}s): Story reconstructed "
+            f"(status: {story.story_status}, {len(story.scenes)} scenes, {len(story.beats)} beats, "
+            f"{len(story.causal_links)} causal links, {len(story.character_arcs)} arcs)"
+        )
+    except Exception as exc:
+        t_story = time.time() - t0
+        err_msg = f"Phase 7 (Reconstruct Story) failed: {exc}"
+        logger.error(err_msg, exc_info=True)
+        phase_results["phase_7_reconstruct_story"] = {
+            "status": "FAILED",
+            "duration_seconds": round(t_story, 3),
+            "error": str(exc),
+        }
+        _write_failed_summary(
+            summary_file_path=summary_file_path,
+            movie_id=assigned_movie_id,
+            source_filename=resolved_source.name,
+            source_path=str(resolved_source),
+            started_at=started_at,
+            duration=time.time() - pipeline_start,
+            phase_results=phase_results,
+            error=err_msg,
+        )
+        raise
+
+    # --------------------------------------------------------------------------
+    # Final Summary Generation
     # --------------------------------------------------------------------------
     total_duration = round(time.time() - pipeline_start, 3)
     completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
