@@ -275,7 +275,7 @@ def test_script_generation_traceability(mock_narration_environment: Path):
 
 
 def test_malay_prose_style_and_naturalness(mock_narration_environment: Path):
-    """Test: Narration is in natural conversational Malay with natural transitions."""
+    """Test: Narration is in natural conversational KL Malay with natural transitions."""
     engine = MalayStorytellerEngine(
         movie_id="test_movie_beta",
         analysis_dir=mock_narration_environment,
@@ -283,10 +283,38 @@ def test_malay_prose_style_and_naturalness(mock_narration_environment: Path):
     script_doc = engine.generate()
 
     full_text = script_doc.full_script.lower()
-    # Check for natural Malaysian Malay phrases
-    assert "awal cerita ni" in full_text or "suasana dibuka" in full_text
-    assert "ribut" in full_text or "hutan" in full_text
+    # Check for natural KL Malay markers
+    assert "awal cerita ni" in full_text
     assert "dr. benjamin price" in full_text
+    assert "vibe" in full_text or "tengah" in full_text or "diorang" in full_text
+
+
+def test_no_banned_formal_phrases_and_kl_style(mock_narration_environment: Path):
+    """Test Phase 8.1: Ensure no stiff academic/formal news Malay phrases remain."""
+    engine = MalayStorytellerEngine(
+        movie_id="test_movie_beta",
+        analysis_dir=mock_narration_environment,
+    )
+    script_doc = engine.generate()
+    full_text = script_doc.full_script.lower()
+
+    banned_phrases = [
+        "dalam pada itu",
+        "berikutan itu",
+        "mewujudkan kontras",
+        "mengakibatkan",
+        "bergelut dalam perairan",
+        "peristiwa tersebut",
+        "individu tersebut",
+        "memberikan gambaran",
+        "menimbulkan persoalan",
+        "dapat diperhatikan",
+        "oleh itu",
+        "setakat bahagian awal ini",
+    ]
+
+    for phrase in banned_phrases:
+        assert phrase not in full_text, f"Banned formal phrase '{phrase}' found in script!"
 
 
 def test_uncertainty_and_identity_bleed_prevention(mock_narration_environment: Path):
@@ -300,12 +328,12 @@ def test_uncertainty_and_identity_bleed_prevention(mock_narration_environment: P
     # Segment 2 (storm sequence) must refer to the traveler cautiously without claiming it's Benjamin
     storm_seg = script_doc.segments[1]
     storm_text = storm_seg.text.lower()
-    # Should use "lelaki" or "pemuda" or "mereka", not assert "Benjamin terjatuh dari bot"
+    # Should use "lelaki", "mamat", or "diorang", not assert "Benjamin terjatuh dari bot"
     assert "benjamin terjatuh" not in storm_text
 
 
 def test_partial_story_handling_and_continuation_marker(mock_narration_environment: Path):
-    """Test 5: Partial coverage scripts end with an explicit continuation marker."""
+    """Test 5: Partial coverage scripts end with an explicit conversational continuation marker."""
     engine = MalayStorytellerEngine(
         movie_id="test_movie_beta",
         analysis_dir=mock_narration_environment,
@@ -314,7 +342,7 @@ def test_partial_story_handling_and_continuation_marker(mock_narration_environme
 
     assert script_doc.status == "PARTIAL"
     last_seg = script_doc.segments[-1]
-    assert "setakat" in last_seg.text.lower() or "sambungan" in last_seg.text.lower() or "misteri" in last_seg.text.lower()
+    assert "buat masa ni" in last_seg.text.lower() or "sambungan" in last_seg.text.lower() or "misteri" in last_seg.text.lower()
     assert len(script_doc.warnings) > 0
 
 

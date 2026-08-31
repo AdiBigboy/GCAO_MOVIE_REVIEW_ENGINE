@@ -11,6 +11,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,38 @@ def _wrap_caption_lines(text: str, max_chars_per_line: int = 55) -> str:
 
     return "\n".join(lines)
 
+def _split_into_caption_chunks(text: str, max_words: int = 15) -> List[str]:
+    """Split segment text into short, natural phrase-level caption chunks."""
+    # Split on sentence terminals first
+    sentences = re.split(r'(?<=[.?!])\s+', text.strip())
+    chunks: List[str] = []
+
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        words = s.split()
+        if len(words) <= max_words:
+            chunks.append(s)
+        else:
+            # Subdivide by commas or midpoints
+            parts = re.split(r'(?<=[,\-])\s+', s)
+            curr: List[str] = []
+            curr_len = 0
+            for p in parts:
+                p_words = p.split()
+                if curr_len + len(p_words) > max_words and curr:
+                    chunks.append(" ".join(curr))
+                    curr = [p]
+                    curr_len = len(p_words)
+                else:
+                    curr.append(p)
+                    curr_len += len(p_words)
+            if curr:
+                chunks.append(" ".join(curr))
+
+    return chunks if chunks else [text]
+
 
 class RoughPreviewRenderer:
     """
@@ -89,22 +122,42 @@ class RoughPreviewRenderer:
         self.preview_dir = analysis_dir / "preview"
         self.chunks_dir = self.preview_dir / "chunks"
         self.output_video_file = self.preview_dir / "rough_preview.mp4"
+        self.output_video_v2_file = self.preview_dir / "rough_preview_v2.mp4"
         self.output_srt_file = self.preview_dir / "captions.srt"
         self.manifest_file = self.preview_dir / "preview_manifest.json"
 
     def generate_srt_captions(self, manifest: PreviewManifest) -> Path:
-        """Create SRT subtitle file mapping narration segments."""
+        """Create phrase-level SRT subtitle file mapping narration segments into timed 1-2 line chunks."""
         self.preview_dir.mkdir(parents=True, exist_ok=True)
         srt_entries: List[str] = []
 
         sub_idx = 1
         for seg in manifest.segments:
-            start_str = _format_srt_time(seg.start_time_seconds)
-            end_str = _format_srt_time(seg.end_time_seconds)
-            clean_text = _wrap_caption_lines(seg.narration_text)
+            seg_start = seg.start_time_seconds
+            seg_end = seg.end_time_seconds
+            seg_dur = max(1.0, seg_end - seg_start)
 
-            srt_entries.append(f"{sub_idx}\n{start_str} --> {end_str}\n{clean_text}\n")
-            sub_idx += 1
+            chunks = _split_into_caption_chunks(seg.narration_text, max_words=14)
+            total_words = sum(len(c.split()) for c in chunks)
+            if total_words == 0:
+                total_words = 1
+
+            t_cursor = seg_start
+            for c_idx, chunk_text in enumerate(chunks):
+                chunk_word_count = len(chunk_text.split())
+                chunk_fraction = chunk_word_count / total_words
+                chunk_dur = seg_dur * chunk_fraction
+
+                c_start = t_cursor
+                c_end = seg_end if c_idx == len(chunks) - 1 else round(t_cursor + chunk_dur, 2)
+                t_cursor = c_end
+
+                start_str = _format_srt_time(c_start)
+                end_str = _format_srt_time(c_end)
+                wrapped_text = _wrap_caption_lines(chunk_text, max_chars_per_line=45)
+
+                srt_entries.append(f"{sub_idx}\n{start_str} --> {end_str}\n{wrapped_text}\n")
+                sub_idx += 1
 
         with open(self.output_srt_file, "w", encoding="utf-8") as f:
             f.write("\n".join(srt_entries))
@@ -112,17 +165,47 @@ class RoughPreviewRenderer:
         logger.info("Saved preview captions to %s", self.output_srt_file)
         return self.output_srt_file
 
-    def _render_placeholder_chunk(self, item: TimelineItem, out_path: Path) -> Path:
-        """Generate a clean dark placeholder visual chunk with segment title card."""
+    def _render_placeholder_chunk(self, item: TimelineItem, out_path: Path, ref_clip_path: Optional[Path] = None) -> Path:
+        """Generate a still freeze/hold placeholder with subtle dark tint and segment title card."""
         dur = max(0.5, item.duration_seconds)
-        # Escape label for drawtext
         clean_label = item.label.replace(":", " - ").replace("'", "").replace("\\", "")
 
+        # If a reference source clip is available, create a still frame hold with darkened overlay
+        if ref_clip_path and ref_clip_path.exists() and ref_clip_path.stat().st_size > 0:
+            still_img = self.chunks_dir / f"{item.item_id}_still.jpg"
+            cmd_extract = [
+                "ffmpeg", "-y",
+                "-ss", "0.5",
+                "-i", str(ref_clip_path),
+                "-vframes", "1",
+                "-q:v", "2",
+                str(still_img),
+            ]
+            subprocess.run(cmd_extract, capture_output=True)
+
+            if still_img.exists() and still_img.stat().st_size > 0:
+                cmd_still = [
+                    "ffmpeg", "-y",
+                    "-loop", "1",
+                    "-i", str(still_img),
+                    "-t", f"{dur:.2f}",
+                    "-vf",
+                    "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,eq=brightness=-0.3:saturation=0.7,setsar=1,"
+                    f"drawtext=text='[ {clean_label} ]':fontcolor=0xccddee:fontsize=34:x=(w-text_w)/2:y=(h-text_h)/2-30,"
+                    f"drawtext=text='Narration Segment ({item.start_time_seconds:.1f}s -> {item.end_time_seconds:.1f}s)':fontcolor=0x8899aa:fontsize=22:x=(w-text_w)/2:y=(h-text_h)/2+30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-r", "30",
+                    str(out_path),
+                ]
+                res_still = subprocess.run(cmd_still, capture_output=True)
+                if res_still.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                    return out_path
+
+        # Standard clean dark placeholder card
         cmd = [
             "ffmpeg",
             "-y",
             "-f", "lavfi",
-            "-i", f"color=c=0x111118:s=1920x1080:d={dur:.2f}:r=30",
+            "-i", f"color=c=0x14141e:s=1920x1080:d={dur:.2f}:r=30",
             "-vf",
             f"drawtext=text='[ {clean_label} ]':fontcolor=0x8899aa:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2-40,"
             f"drawtext=text='Narration Segment ({item.start_time_seconds:.1f}s -> {item.end_time_seconds:.1f}s)':fontcolor=0x556677:fontsize=24:x=(w-text_w)/2:y=(h-text_h)/2+30",
@@ -134,7 +217,6 @@ class RoughPreviewRenderer:
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
-            # Fallback simple black chunk if font/drawtext is missing
             cmd_fallback = [
                 "ffmpeg", "-y", "-f", "lavfi",
                 "-i", f"color=c=black:s=1920x1080:d={dur:.2f}:r=30",
@@ -196,12 +278,18 @@ class RoughPreviewRenderer:
         chunk_files: List[Path] = []
         all_items: List[TimelineItem] = [it for seg in manifest.segments for it in seg.items]
 
-        for it in all_items:
+        for idx, it in enumerate(all_items):
             chunk_file = self.chunks_dir / f"{it.item_id}_{it.item_type}.mp4"
             if it.item_type == "SOURCE_CLIP":
                 self._render_source_clip_chunk(it, chunk_file)
             else:
-                self._render_placeholder_chunk(it, chunk_file)
+                # Find nearest source clip in timeline to use as freeze still background
+                ref_clip: Optional[Path] = None
+                if idx > 0 and all_items[idx - 1].clip_path:
+                    ref_clip = Path(str(all_items[idx - 1].clip_path))
+                elif idx < len(all_items) - 1 and all_items[idx + 1].clip_path:
+                    ref_clip = Path(str(all_items[idx + 1].clip_path))
+                self._render_placeholder_chunk(it, chunk_file, ref_clip_path=ref_clip)
             chunk_files.append(chunk_file)
 
         # 3. Create concat list
@@ -266,6 +354,12 @@ class RoughPreviewRenderer:
             ]
             subprocess.run(cmd_no_sub, capture_output=True, check=True)
 
+        # Also create copy rough_preview_v2.mp4
+        try:
+            shutil.copy2(self.output_video_file, self.output_video_v2_file)
+        except Exception:
+            pass
+
         # Cleanup temp concat
         if temp_concat_video.exists():
             try:
@@ -273,7 +367,7 @@ class RoughPreviewRenderer:
             except Exception:
                 pass
 
-        logger.info("Successfully rendered rough preview video to %s", self.output_video_file)
+        logger.info("Successfully rendered rough preview video to %s and %s", self.output_video_file, self.output_video_v2_file)
         return self.output_video_file
 
 

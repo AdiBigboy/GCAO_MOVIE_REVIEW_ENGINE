@@ -168,59 +168,54 @@ class MalayStorytellerEngine:
         # 1. Opening Hook / Prologue / Audio Log Discovery
         if seg_plan.purpose == "opening_hook_and_audio_discovery" or (is_first and "kunda" in combined_text or "tape recorder" in combined_text):
             return (
-                "Awal cerita ni, suasana dibuka dengan rakaman suara daripada Dr. Benjamin Price, "
-                "seorang profesor sejarah kuno yang sedang menyelaraskan pita rakaman audio. "
-                "Suasana terus bertukar seram bila kita nampak satu halaman kertas usang yang dipenuhi tulisan 'Kunda', "
-                "bersama bungkusan misteri berbalut guni plastik yang dibuka dengan penuh berhati-hati. "
-                "Dari awal lagi kita dah dapat rasa ada ancaman purba yang bakal mencetuskan huru-hara."
+                "Awal cerita ni, kita dengar rakaman suara Dr. Benjamin Price, seorang profesor sejarah kuno yang tengah set up tape audio dia. "
+                "Lepas tu vibe terus jadi seram bila nampak page usang penuh tulisan 'Kunda', siap ada bungkusan plastik misteri yang dia buka cermat gila. "
+                "Dari awal lagi kita dah boleh rasa... memang ada something tak kena dengan benda purba ni."
             )
 
         # 2. Rising Action / Storm Crisis / Boat Navigation & Wash Ashore
         elif seg_plan.purpose == "rising_action_and_crisis" or ("storm" in combined_text or "motorboat" in combined_text or "crawfish" in combined_text):
             return (
-                "Kat sinilah keadaan mula jadi bertambah tegang. Di kawasan luar yang gelap dan dilanda hujan lebat, "
-                "seorang pemuda dilihat cemas mencari rakannya bernama Jared sebelum berjaya menemuinya di dalam sebuah tempat perlindungan besi. "
-                "Tanpa berlengah, mereka segera cuba melarikan diri menggunakan sebuah bot kecil meredah ribut di perairan terbuka. "
-                "Tapi keadaan ribut yang ganas mengakibatkan bot mereka hilang kawalan, memaksa lelaki tersebut bergelut dalam air "
-                "sebelum akhirnya terdampar keseorangan di tebing hutan yang gelap."
+                "Kat sinilah benda mula jadi makin tegang. Tengah-tengah hujan lebat malam buta, ada sorang mamat ni cemas gila cari member dia, Jared. "
+                "Bila jumpa je kat pondok besi, diorang tak buang masa -- terus cabut naik bot kecil redah ribut. "
+                "Tapi ombak punya kuat sampai bot terbalik, dia bergelut dalam air, dan last-last terdampar sorang-sorang kat tebing hutan."
             )
 
         # 3. Nightclub / Social Gathering Shift
         elif seg_plan.purpose == "setting_shift_and_character_intro" or ("nightclub" in combined_text or "birthday" in combined_text):
             return (
-                "Kemudian, babak cerita tiba-tiba beralih ke satu suasana yang berbeza sama sekali—di dalam sebuah kelab malam "
-                "berlampu merah di mana sekumpulan anak muda sedang berseronok menyambut hari jadi sambil memesan minuman dan membuka hadiah. "
-                "Perubahan latar ini mewujudkan kontras yang ketara dan meninggalkan tanda tanya tentang bagaimana peristiwa ini "
-                "berhubung kait dengan insiden berbahaya di kawasan tasik tadi."
+                "Pastu scene terus cut pergi tempat lain pulak -- dalam satu kelab malam lampu merah. "
+                "Kat sini geng budak muda tengah seronok celebrate birthday party, order air, buka hadiah bagai. "
+                "Memang pelik gila sebab vibe dia terus bertukar, dan kita mula tertanya-tanya... apa kaitan geng clubbing ni dengan tragedi kat tasik tadi?"
             )
 
         # 4. Atmospheric Transition
         elif seg_plan.purpose == "atmospheric_transition":
             return (
-                "Dalam pada itu, kita dapat melihat objek berbalut tadi terapung di atas air tasik yang tenang pada waktu malam, "
-                "memberikan jeda sunyi yang penuh tanda tanya sebelum ketegangan seterusnya bermula."
+                "Lepas tu camera cut, nampak bungkusan berbalut tadi terapung je atas air tasik waktu malam. "
+                "Sunyi sepi... macam tenang sebelum ribut betul-betul nak hempas."
             )
 
         # 5. Generic / Fallback Scene Prose Generation (Grounding from Scene and Causality Evidence)
         else:
             sentences: List[str] = []
             if is_first:
-                sentences.append("Cerita dimulakan dengan perkembangan awal yang cukup menarik.")
+                sentences.append("Awal-awal lagi cerita dah start dengan hook yang menarik.")
             else:
-                sentences.append("Seterusnya, cerita bergerak ke perkembangan yang lebih mendalam.")
+                sentences.append("Lepas tu cerita mula gerak pergi part yang lagi mendalam.")
 
             for s in supp_scenes:
-                loc_clean = s.location if s.location and "unspecified" not in s.location.lower() else "lokasi berkenaan"
+                loc_clean = s.location if s.location and "unspecified" not in s.location.lower() else "tempat tu"
                 if s.scene_function in ("CONFLICT", "ESCALATION"):
-                    sentences.append(f"Di {loc_clean}, ketegangan memuncak apabila watak berdepan cabaran yang mencemaskan.")
+                    sentences.append(f"Kat {loc_clean}, situasi makin tegang bila watak kena hadap benda tak dijangka.")
                 elif s.scene_function in ("DISCOVERY", "REVEAL"):
-                    sentences.append(f"Di kawasan {loc_clean}, beberapa petunjuk penting berjaya ditemui.")
+                    sentences.append(f"Kat area {loc_clean}, ada beberapa clue penting mula terbongkar.")
                 else:
-                    sentences.append(f"Di {loc_clean}, watak-watak dilihat saling berinteraksi menghadapi situasi semasa.")
+                    sentences.append(f"Kat {loc_clean}, kita nampak watak-watak tengah handle situasi diorang.")
 
             for link in story_doc.causal_links:
                 if any(ev in seg_plan.event_indices for ev in link.evidence_events):
-                    sentences.append(f"Tindakan tersebut secara langsung membawa kepada kesan di mana {link.effect.lower()}")
+                    sentences.append(f"Benda ni terus bagi impak kat mana {link.effect.lower()}")
                     break
 
             return " ".join(sentences)
@@ -276,9 +271,9 @@ class MalayStorytellerEngine:
         # If story status is PARTIAL, append a natural partial continuation segment
         if story_doc.story_status == "PARTIAL":
             continuation_text = (
-                "Setakat bahagian awal ini, jalan cerita masih penuh dengan tanda tanya dan misteri "
-                "yang baru sahaja bermula. Apakah kaitan sebenar antara bungkusan guni yang dibuka tadi "
-                "dengan nasib mangsa yang terdampar di hutan? Kita akan ketahui dalam sambungan analisis seterusnya."
+                "So buat masa ni, kita baru nampak sikit je apa yang sebenarnya tengah jadi. "
+                "Apa kaitan bungkusan guni tadi dengan mamat yang terdampar kat hutan tu? "
+                "Benda ni baru mula panas, dan jawapan dia kita akan bongkar dalam sambungan lepas ni."
             )
             cont_words = len(re.findall(r"\b\w+\b", continuation_text))
             cont_dur = (cont_words / max(self.words_per_minute, 1.0)) * 60.0
