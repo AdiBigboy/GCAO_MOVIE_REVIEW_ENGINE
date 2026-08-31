@@ -75,9 +75,16 @@ class PreviewTimelineBuilder:
 
         return None
 
-    def build_timeline(self) -> PreviewManifest:
+    def build_timeline(
+        self,
+        default_freeze_duration: float = 1.0,
+        max_freeze_duration: float = 2.0,
+        default_black_transition_duration: float = 2.0,
+        max_black_transition_duration: float = 3.0,
+    ) -> PreviewManifest:
         """
-        Interleave source clips with placeholders to match segment narration durations.
+        Build a cinematic preview timeline using short freeze bridges (<=2s) and
+        short black transitions (<=3s) between scenes/segments.
         """
         script_doc, clip_plan_doc = self.load_inputs()
 
@@ -91,24 +98,21 @@ class PreviewTimelineBuilder:
 
         for seg_idx, script_seg in enumerate(script_doc.segments, start=1):
             seg_start = current_time
-            seg_duration = max(5.0, script_seg.estimated_duration_seconds)
-            seg_end = round(seg_start + seg_duration, 2)
-
             clips = clips_by_seg.get(script_seg.segment_id, [])
-            total_clip_time = sum(c.duration_seconds for c in clips)
-
             seg_items: List[TimelineItem] = []
+            t_cursor = seg_start
 
             if not clips:
-                # No clips (e.g. continuation marker): 100% placeholder card
+                # No clips (e.g. continuation marker): Short black/dark transition (<=3.0s)
+                trans_dur = min(max_black_transition_duration, default_black_transition_duration + 0.5)
                 item = TimelineItem(
                     item_id=f"ITEM_{item_counter:03d}",
-                    item_type="PLACEHOLDER",
-                    start_time_seconds=round(seg_start, 2),
-                    end_time_seconds=round(seg_end, 2),
-                    duration_seconds=round(seg_duration, 2),
+                    item_type="BLACK_TRANSITION",
+                    start_time_seconds=round(t_cursor, 2),
+                    end_time_seconds=round(t_cursor + trans_dur, 2),
+                    duration_seconds=round(trans_dur, 2),
                     caption_text=script_seg.text,
-                    label=f"Narration Context: {script_seg.segment_id}",
+                    label=f"Continuation Transition: {script_seg.segment_id}",
                     has_source_audio=False,
                     audio_track_type="SILENCE",
                     future_narration_point=True,
@@ -116,41 +120,10 @@ class PreviewTimelineBuilder:
                 )
                 seg_items.append(item)
                 item_counter += 1
+                t_cursor = round(t_cursor + trans_dur, 2)
             else:
-                # Distribute clips and placeholders
-                # Placeholders fill the gap between clips
-                remaining_placeholder_time = max(0.0, seg_duration - total_clip_time)
-                # Divide into intervals: before first clip, between clips, after last clip
-                interval_count = len(clips) + 1
-                gap_duration = round(remaining_placeholder_time / interval_count, 2)
-
-                t_cursor = seg_start
-
                 for c_idx, clip in enumerate(clips):
-                    # 1. Leading/Intermediary Placeholder (Still/Freeze hold)
-                    if gap_duration >= 0.5:
-                        p_start = t_cursor
-                        p_end = round(t_cursor + gap_duration, 2)
-                        p_dur = round(p_end - p_start, 2)
-                        seg_items.append(
-                            TimelineItem(
-                                item_id=f"ITEM_{item_counter:03d}",
-                                item_type="PLACEHOLDER",
-                                start_time_seconds=round(p_start, 2),
-                                end_time_seconds=round(p_end, 2),
-                                duration_seconds=p_dur,
-                                caption_text=script_seg.text,
-                                label=f"Scene Hold: {clip.source_scene_id}",
-                                has_source_audio=False,
-                                audio_track_type="SILENCE",
-                                future_narration_point=True,
-                                audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
-                            )
-                        )
-                        item_counter += 1
-                        t_cursor = p_end
-
-                    # 2. Source Clip (Moving video + original source audio)
+                    # 1. Moving Source Clip (<=3.0s, with original audio)
                     c_start = t_cursor
                     c_end = round(t_cursor + clip.duration_seconds, 2)
                     c_dur = round(c_end - c_start, 2)
@@ -177,20 +150,24 @@ class PreviewTimelineBuilder:
                     item_counter += 1
                     t_cursor = c_end
 
-                # 3. Trailing Placeholder
-                if t_cursor < seg_end - 0.2:
-                    p_start = t_cursor
-                    p_end = seg_end
-                    p_dur = round(p_end - p_start, 2)
+                    # 2. Short Freeze Bridge (<=2.0s, default 1.0s, with silent audio)
+                    freeze_dur = min(max_freeze_duration, default_freeze_duration)
+                    f_start = t_cursor
+                    f_end = round(t_cursor + freeze_dur, 2)
+                    f_dur = round(f_end - f_start, 2)
                     seg_items.append(
                         TimelineItem(
                             item_id=f"ITEM_{item_counter:03d}",
-                            item_type="PLACEHOLDER",
-                            start_time_seconds=round(p_start, 2),
-                            end_time_seconds=round(p_end, 2),
-                            duration_seconds=p_dur,
+                            item_type="STILL_FREEZE",
+                            start_time_seconds=round(f_start, 2),
+                            end_time_seconds=round(f_end, 2),
+                            duration_seconds=f_dur,
+                            source_clip_id=clip.clip_id,
+                            source_event_index=clip.source_event_index,
+                            source_scene_id=clip.source_scene_id,
                             caption_text=script_seg.text,
-                            label="Narrative Transition",
+                            clip_path=str(clip_file) if clip_file else None,
+                            label=f"Still Hold: {clip.clip_id}",
                             has_source_audio=False,
                             audio_track_type="SILENCE",
                             future_narration_point=True,
@@ -198,13 +175,39 @@ class PreviewTimelineBuilder:
                         )
                     )
                     item_counter += 1
-                    t_cursor = seg_end
+                    t_cursor = f_end
+
+                # 3. Short Black/Dark Transition at segment / scene shift (<=3.0s)
+                trans_dur = min(max_black_transition_duration, default_black_transition_duration)
+                tr_start = t_cursor
+                tr_end = round(t_cursor + trans_dur, 2)
+                tr_dur = round(tr_end - tr_start, 2)
+                seg_items.append(
+                    TimelineItem(
+                        item_id=f"ITEM_{item_counter:03d}",
+                        item_type="BLACK_TRANSITION",
+                        start_time_seconds=round(tr_start, 2),
+                        end_time_seconds=round(tr_end, 2),
+                        duration_seconds=tr_dur,
+                        caption_text=script_seg.text,
+                        label=f"Scene Transition: {script_seg.segment_id}",
+                        has_source_audio=False,
+                        audio_track_type="SILENCE",
+                        future_narration_point=True,
+                        audio_bus_mapping={"narration_bus_ducking_db": 0.0, "source_audio_bus_db": -99.0},
+                    )
+                )
+                item_counter += 1
+                t_cursor = tr_end
+
+            seg_end = t_cursor
+            seg_duration = round(seg_end - seg_start, 2)
 
             seg_timeline = SegmentTimeline(
                 segment_id=script_seg.segment_id,
                 start_time_seconds=round(seg_start, 2),
                 end_time_seconds=round(seg_end, 2),
-                duration_seconds=round(seg_duration, 2),
+                duration_seconds=seg_duration,
                 narration_text=script_seg.text,
                 items=seg_items,
             )
@@ -214,7 +217,7 @@ class PreviewTimelineBuilder:
         total_duration = round(current_time, 2)
         all_items = [it for s in segment_timelines for it in s.items]
         clips_count = sum(1 for it in all_items if it.item_type == "SOURCE_CLIP")
-        placeholders_count = sum(1 for it in all_items if it.item_type == "PLACEHOLDER")
+        placeholders_count = sum(1 for it in all_items if it.item_type != "SOURCE_CLIP")
 
         manifest = PreviewManifest(
             movie_id=self.movie_id,
@@ -226,11 +229,17 @@ class PreviewTimelineBuilder:
             total_source_clips=clips_count,
             total_placeholders=placeholders_count,
             total_source_footage_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type == "SOURCE_CLIP"), 2),
-            total_placeholder_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type == "PLACEHOLDER"), 2),
-            video_output_path=str(self.preview_dir / "rough_preview.mp4"),
+            total_placeholder_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type != "SOURCE_CLIP"), 2),
+            total_freeze_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]), 2),
+            total_black_transition_seconds=round(sum(it.duration_seconds for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]), 2),
+            longest_freeze_seconds=round(max((it.duration_seconds for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]), default=0.0), 2),
+            longest_black_transition_seconds=round(max((it.duration_seconds for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]), default=0.0), 2),
+            video_output_path=str(self.preview_dir / "rough_preview_v4.mp4"),
             segments=segment_timelines,
             created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            warnings=script_doc.warnings,
+            warnings=[] if script_doc.status == "COMPLETE" else [
+                "Preview built for partial movie coverage with <=2.0s freeze bridges and <=3.0s black transitions."
+            ],
         )
 
         return manifest

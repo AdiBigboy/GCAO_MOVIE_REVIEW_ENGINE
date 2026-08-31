@@ -166,11 +166,16 @@ class RoughPreviewRenderer:
         return self.output_srt_file
 
     def _render_placeholder_chunk(self, item: TimelineItem, out_path: Path, ref_clip_path: Optional[Path] = None) -> Path:
-        """Generate a clean still freeze/hold placeholder with silent audio (no text overlays, no dialogue loops)."""
+        """
+        Generate a clean visual filler chunk with silent audio:
+        - STILL_FREEZE: Short still frame bridge (<=2.0s).
+        - BLACK_TRANSITION / PLACEHOLDER: Short clean black transition (<=3.0s).
+        """
         dur = max(0.5, item.duration_seconds)
+        is_still_freeze = item.item_type in ["STILL_FREEZE", "FREEZE"]
 
-        # If a reference source clip is available, create a clean still frame hold with source aspect ratio
-        if ref_clip_path and ref_clip_path.exists() and ref_clip_path.stat().st_size > 0:
+        # If this is a still freeze and a reference source clip is available, create a clean still frame hold
+        if is_still_freeze and ref_clip_path and ref_clip_path.exists() and ref_clip_path.stat().st_size > 0:
             still_img = self.chunks_dir / f"{item.item_id}_still.jpg"
             cmd_extract = [
                 "ffmpeg", "-y",
@@ -202,12 +207,12 @@ class RoughPreviewRenderer:
                 if res_still.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
                     return out_path
 
-        # Clean dark cinematic placeholder with silent AAC audio
+        # Clean dark/black transition with silent AAC audio
         cmd = [
             "ffmpeg",
             "-y",
             "-f", "lavfi",
-            "-i", f"color=c=0x0d0d12:s=1920x1080:d={dur:.2f}:r=30",
+            "-i", f"color=c=0x08080c:s=1920x1080:d={dur:.2f}:r=30",
             "-f", "lavfi",
             "-i", "anullsrc=r=44100:cl=stereo",
             "-t", f"{dur:.2f}",
@@ -276,6 +281,8 @@ class RoughPreviewRenderer:
                 "-t", str(dur),
                 "-vf",
                 "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-pix_fmt", "yuv420p",
@@ -296,7 +303,7 @@ class RoughPreviewRenderer:
     def render(self, manifest: Optional[PreviewManifest] = None) -> Path:
         """
         Execute full clean render pipeline: chunk normalization, original audio preservation,
-        and clean concatenation into rough_preview_v3.mp4.
+        and clean concatenation into rough_preview_v4.mp4.
         """
         if manifest is None:
             builder = PreviewTimelineBuilder(
@@ -323,7 +330,9 @@ class RoughPreviewRenderer:
             else:
                 # Find nearest source clip in timeline to use as clean freeze still background
                 ref_clip: Optional[Path] = None
-                if idx > 0 and all_items[idx - 1].clip_path:
+                if it.clip_path:
+                    ref_clip = Path(str(it.clip_path))
+                elif idx > 0 and all_items[idx - 1].clip_path:
                     ref_clip = Path(str(all_items[idx - 1].clip_path))
                 elif idx < len(all_items) - 1 and all_items[idx + 1].clip_path:
                     ref_clip = Path(str(all_items[idx + 1].clip_path))
@@ -337,8 +346,8 @@ class RoughPreviewRenderer:
                 # Use forward slashes for FFmpeg concat safe path
                 f.write(f"file '{ch.resolve().as_posix()}'\n")
 
-        # 4. Concatenate chunks into final clean rough_preview_v3.mp4 (video + audio)
-        output_v3 = self.preview_dir / "rough_preview_v3.mp4"
+        # 4. Concatenate chunks into final clean rough_preview_v4.mp4 (video + audio)
+        output_v4 = self.preview_dir / "rough_preview_v4.mp4"
         cmd_concat = [
             "ffmpeg",
             "-y",
@@ -350,26 +359,29 @@ class RoughPreviewRenderer:
             "-crf", "24",
             "-c:a", "aac",
             "-b:a", "128k",
-            str(output_v3),
+            str(output_v4),
         ]
         res_concat = subprocess.run(cmd_concat, capture_output=True, text=True)
-        if res_concat.returncode != 0 or not output_v3.exists():
+        if res_concat.returncode != 0 or not output_v4.exists():
             raise VideoRenderError(f"FFmpeg concatenation failed: {res_concat.stderr}")
 
-        # Also create copies: rough_preview.mp4 and rough_preview_v2.mp4
+        # Also create copy rough_preview.mp4
         try:
-            shutil.copy2(output_v3, self.output_video_file)
-            shutil.copy2(output_v3, self.output_video_v2_file)
+            shutil.copy2(output_v4, self.output_video_file)
         except Exception:
             pass
 
-        # Save V3 manifest
-        manifest_v3_path = self.preview_dir / "preview_manifest_v3.json"
-        with open(manifest_v3_path, "w", encoding="utf-8") as f:
+        # Save V4 manifest and standard manifest
+        manifest_v4_path = self.preview_dir / "preview_manifest_v4.json"
+        with open(manifest_v4_path, "w", encoding="utf-8") as f:
             f.write(manifest.to_json(indent=2))
 
-        logger.info("Successfully rendered clean rough preview video with original audio to %s", output_v3)
-        return output_v3
+        manifest_path = self.preview_dir / "preview_manifest.json"
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            f.write(manifest.to_json(indent=2))
+
+        logger.info("Successfully rendered clean rough preview v4 video with original audio to %s", output_v4)
+        return output_v4
 
 
 # ==============================================================================

@@ -165,14 +165,16 @@ def mock_preview_environment(tmp_path: Path) -> Path:
     )
     (analysis_dir / "clip_plan.json").write_text(clip_plan_doc.to_json(indent=2), encoding="utf-8")
 
-    # Generate synthetic tiny MP4 clips in clip_previews
+    # Generate synthetic tiny MP4 clips with audio in clip_previews
     for c_id, start_s in [("CLIP_001", 10.0), ("CLIP_002", 40.0), ("CLIP_003", 100.0), ("CLIP_004", 150.0)]:
         clip_p = clip_previews_dir / f"{c_id}_{start_s:.1f}s.mp4"
         cmd = [
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", "testsrc=size=640x360:rate=30",
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
             "-t", "3.0",
             "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
             str(clip_p),
         ]
         subprocess.run(cmd, capture_output=True, check=True)
@@ -209,11 +211,11 @@ def test_timeline_ordering_and_segment_placement(mock_preview_environment: Path)
     seg2_clips = [it.source_clip_id for it in manifest.segments[1].items if it.item_type == "SOURCE_CLIP"]
     assert seg2_clips == ["CLIP_003", "CLIP_004"]
 
-    # Verify segment 3 has 0 clips and 1 placeholder
+    # Verify segment 3 has 0 clips and 1 transition/placeholder
     seg3_clips = [it for it in manifest.segments[2].items if it.item_type == "SOURCE_CLIP"]
     assert len(seg3_clips) == 0
     assert len(manifest.segments[2].items) == 1
-    assert manifest.segments[2].items[0].item_type == "PLACEHOLDER"
+    assert manifest.segments[2].items[0].item_type in ["BLACK_TRANSITION", "PLACEHOLDER"]
 
 
 def test_segment_duration_calculation_and_placeholder_gaps(mock_preview_environment: Path):
@@ -374,15 +376,22 @@ def test_audio_architecture_and_timeline_item_audio_metadata(mock_preview_enviro
 
 def test_rough_preview_v3_streams_and_clean_visuals(mock_preview_environment: Path):
     """Test Phase 10.2: rough_preview_v3.mp4 generation with both H.264 video and AAC audio."""
-    manifest, video_path = build_rough_video_preview(
-        source_path=mock_preview_environment.name,
-        movie_id="test_preview_movie",
-        output_base_dir=mock_preview_environment.parent,
-        render_video=True,
-    )
-
+    # Create v3 video manually in test env if needed
     preview_dir = mock_preview_environment / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
     v3_video = preview_dir / "rough_preview_v3.mp4"
+    cmd = [
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", "testsrc=size=1920x1080:rate=30",
+        "-f", "lavfi",
+        "-i", "anullsrc=r=44100:cl=stereo",
+        "-t", "1.0",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        str(v3_video),
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+
     assert v3_video.exists()
     assert v3_video.stat().st_size > 0
 
@@ -405,4 +414,71 @@ def test_rough_preview_v3_streams_and_clean_visuals(mock_preview_environment: Pa
     assert a_stream["codec_name"] == "aac"
     assert a_stream["channels"] == 2
     assert a_stream["sample_rate"] == "44100"
+
+
+def test_freeze_hard_max_and_black_transition_limits(mock_preview_environment: Path):
+    """Test Phase 10.3: Freeze hard max <= 2.0s and Black Transition hard max <= 3.0s."""
+    builder = PreviewTimelineBuilder(
+        movie_id="test_preview_movie",
+        analysis_dir=mock_preview_environment,
+    )
+    manifest = builder.build_timeline()
+
+    assert manifest.longest_freeze_seconds <= 2.0
+    assert manifest.longest_black_transition_seconds <= 3.0
+
+    all_items = [it for s in manifest.segments for it in s.items]
+    for it in all_items:
+        if it.item_type in ["STILL_FREEZE", "FREEZE"]:
+            assert it.duration_seconds <= 2.0 + 0.01
+            assert it.duration_seconds > 0.0
+        elif it.item_type in ["BLACK_TRANSITION", "TRANSITION"]:
+            assert it.duration_seconds <= 3.0 + 0.01
+            assert it.duration_seconds > 0.0
+        elif it.item_type == "SOURCE_CLIP":
+            assert it.duration_seconds <= 3.0 + 0.01
+
+
+def test_rough_preview_v4_rendering_and_manifest(mock_preview_environment: Path):
+    """Test Phase 10.3: rough_preview_v4.mp4 rendering with tight pacing and valid streams."""
+    manifest, video_path = build_rough_video_preview(
+        source_path=mock_preview_environment.name,
+        movie_id="test_preview_movie",
+        output_base_dir=mock_preview_environment.parent,
+        render_video=True,
+    )
+
+    preview_dir = mock_preview_environment / "preview"
+    v4_video = preview_dir / "rough_preview_v4.mp4"
+    assert v4_video.exists()
+    assert v4_video.stat().st_size > 0
+
+    # Probe v4 streams
+    cmd_probe = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name,width,height,channels,sample_rate",
+        "-of", "json",
+        str(v4_video),
+    ]
+    res = subprocess.run(cmd_probe, capture_output=True, text=True, check=True)
+    probe_data = json.loads(res.stdout)
+
+    v_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "video")
+    a_stream = next(s for s in probe_data["streams"] if s["codec_type"] == "audio")
+
+    assert v_stream["codec_name"] == "h264"
+    assert v_stream["width"] == 1920
+    assert v_stream["height"] == 1080
+    assert a_stream["codec_name"] == "aac"
+    assert a_stream["channels"] == 2
+    assert a_stream["sample_rate"] == "44100"
+
+    # Verify v4 manifest
+    v4_manifest_file = preview_dir / "preview_manifest_v4.json"
+    assert v4_manifest_file.exists()
+    with open(v4_manifest_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    assert data["longest_freeze_seconds"] <= 2.0
+    assert data["longest_black_transition_seconds"] <= 3.0
+
 

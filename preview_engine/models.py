@@ -123,6 +123,10 @@ class PreviewManifest:
     total_placeholders: int = 0
     total_source_footage_seconds: float = 0.0
     total_placeholder_seconds: float = 0.0
+    total_freeze_seconds: float = 0.0
+    total_black_transition_seconds: float = 0.0
+    longest_freeze_seconds: float = 0.0
+    longest_black_transition_seconds: float = 0.0
     video_output_path: Optional[str] = None
     audio_architecture: Dict[str, Any] = field(default_factory=lambda: {
         "narration_bus": {"role": "primary_voice", "ducking_depth_db": -14.0},
@@ -136,7 +140,14 @@ class PreviewManifest:
     def to_dict(self) -> Dict[str, Any]:
         all_items = [it for s in self.segments for it in s.items]
         clips = [it for it in all_items if it.item_type == "SOURCE_CLIP"]
-        placeholders = [it for it in all_items if it.item_type == "PLACEHOLDER"]
+        freezes = [it for it in all_items if it.item_type in ["STILL_FREEZE", "FREEZE"]]
+        transitions = [it for it in all_items if it.item_type in ["BLACK_TRANSITION", "TRANSITION"]]
+        placeholders = [it for it in all_items if it.item_type not in ["SOURCE_CLIP"]]
+
+        total_freeze_dur = sum(f.duration_seconds for f in freezes)
+        total_trans_dur = sum(t.duration_seconds for t in transitions)
+        max_freeze = max((f.duration_seconds for f in freezes), default=0.0)
+        max_trans = max((t.duration_seconds for t in transitions), default=0.0)
 
         return {
             "movie_id": self.movie_id,
@@ -149,6 +160,10 @@ class PreviewManifest:
             "total_placeholders": len(placeholders),
             "total_source_footage_seconds": round(sum(c.duration_seconds for c in clips), 2),
             "total_placeholder_seconds": round(sum(p.duration_seconds for p in placeholders), 2),
+            "total_freeze_seconds": round(total_freeze_dur, 2),
+            "total_black_transition_seconds": round(total_trans_dur, 2),
+            "longest_freeze_seconds": round(max_freeze, 2),
+            "longest_black_transition_seconds": round(max_trans, 2),
             "video_output_path": self.video_output_path,
             "audio_architecture": self.audio_architecture,
             "segments": [s.to_dict() if isinstance(s, SegmentTimeline) else s for s in self.segments],
@@ -172,6 +187,10 @@ class PreviewManifest:
             total_placeholders=int(data.get("total_placeholders", 0)),
             total_source_footage_seconds=float(data.get("total_source_footage_seconds", 0.0)),
             total_placeholder_seconds=float(data.get("total_placeholder_seconds", 0.0)),
+            total_freeze_seconds=float(data.get("total_freeze_seconds", 0.0)),
+            total_black_transition_seconds=float(data.get("total_black_transition_seconds", 0.0)),
+            longest_freeze_seconds=float(data.get("longest_freeze_seconds", 0.0)),
+            longest_black_transition_seconds=float(data.get("longest_black_transition_seconds", 0.0)),
             video_output_path=data.get("video_output_path"),
             audio_architecture=dict(data.get("audio_architecture", {
                 "narration_bus": {"role": "primary_voice", "ducking_depth_db": -14.0},
